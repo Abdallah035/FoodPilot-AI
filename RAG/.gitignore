@@ -1,0 +1,30 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+env/
+RAG/env/
+.venv/
+venv/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Environment variables
+.env
+*.env
+
+# VS Code
+.vscode/
+
+# Local database / temporary files
+RAG/chroma_egyptian_dishes/
+
+# System files
+.DS_Store
+Thumbs.db
