@@ -1,0 +1,9 @@
+# Food Pilot — Agent 1 (Discovery / Scout) dependencies
+langgraph
+langchain
+langchain-anthropic
+langsmith
+apify-client
+tavily-python
+python-dotenv
+pydantic
