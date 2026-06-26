@@ -10,7 +10,7 @@ Actor input we use:
     maxCrawledPlacesPerSearch  -> how many to pull
 
 Relevant raw output fields (per place):
-    title, totalScore, reviewsCount, location.{lat,lng}, address, price
+    title, totalScore, reviewsCount, location.{lat,lng}, address, phone, price
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ def _map_place(place: dict) -> Optional[Restaurant]:
     return Restaurant(
         name=place.get("title") or "Unknown",
         address=place.get("address") or "",
+        phone=place.get("phone") or place.get("phoneUnformatted") or "",
         coordinates=Coordinates(lat=float(lat), lon=float(lng)),
         rating=float(place.get("totalScore") or 0.0),
         reviews=int(place.get("reviewsCount") or 0),

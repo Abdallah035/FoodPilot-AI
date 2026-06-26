@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from langgraph.types import interrupt
 
-from . import config
+from .compile import build_payload
+from .deals import find_deals
 from .discovery import search_restaurants
 from .intent import parse_intent
 from .scoring import rank_top3
@@ -63,6 +64,8 @@ def ask_user_restaurant(state: ScoutState) -> dict:
                     "name": r["name"],
                     "score": r["score"],
                     "reason": r["reason"],
+                    "address": r.get("address", ""),
+                    "phone": r.get("phone", ""),
                 }
                 for i, r in enumerate(options)
             ],
@@ -80,7 +83,84 @@ def _coerce_index(choice, count: int) -> int:
     try:
         index = int(choice)
     except (TypeError, ValueError):
-        raise ValueError(f"Invalid restaurant choice: {choice!r}")
+        raise ValueError(f"Invalid choice: {choice!r}")
     if not 0 <= index < count:
         raise ValueError(f"Choice {index} out of range 0..{count - 1}")
     return index
+
+
+def _coerce_quantity(value) -> int:
+    """Normalise a quantity resume value into a positive int (default 1)."""
+    if value is None:
+        return 1
+    try:
+        qty = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return qty if qty >= 1 else 1
+
+
+def find_deals_node(state: ScoutState) -> dict:
+    """Node: deep-dive the selected restaurant's menu (Talabat -> Tavily -> estimate).
+
+    Reads:  selected_restaurant, food_entity
+    Writes: found_deals (as dicts)
+    """
+    restaurant = state["selected_restaurant"]
+    food_entity = state.get("food_entity", "")
+
+    deals = find_deals(restaurant["name"], food_entity)
+    return {"found_deals": [d.model_dump() for d in deals]}
+
+
+def ask_user_deal(state: ScoutState) -> dict:
+    """HITL #2: pause and let the user pick a deal AND set its quantity.
+
+    Calls interrupt() with the deal options. The runner resumes with either:
+      - an int index (quantity defaults to 1), or
+      - a dict {"index": i, "quantity": q}.
+
+    Reads:  found_deals
+    Writes: selected_deal (with the user's chosen quantity)
+    """
+    options = state["found_deals"]
+
+    choice = interrupt(
+        {
+            "type": "select_deal",
+            "prompt": "Pick a deal (by number) and a quantity:",
+            "options": [
+                {
+                    "index": i,
+                    "item_name": d["item_name"],
+                    "price": d["price"],
+                    "currency": d["currency"],
+                    "deal_description": d["deal_description"],
+                }
+                for i, d in enumerate(options)
+            ],
+        }
+    )
+
+    quantity = 1
+    if isinstance(choice, dict):
+        quantity = _coerce_quantity(choice.get("quantity"))
+    index = _coerce_index(choice, len(options))
+
+    selected = dict(options[index])
+    selected["quantity"] = quantity
+    return {"selected_deal": selected}
+
+
+def compile_payload(state: ScoutState) -> dict:
+    """Final node: build the strict OrderPayload JSON from the decisions.
+
+    Reads:  food_entity, selected_restaurant, selected_deal
+    Writes: payload (the JSON contract for the next agent)
+    """
+    payload = build_payload(
+        user_intent=state.get("food_entity", ""),
+        selected_restaurant=state["selected_restaurant"],
+        selected_deal=state["selected_deal"],
+    )
+    return {"payload": payload.model_dump()}

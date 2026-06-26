@@ -25,6 +25,7 @@ class Restaurant(BaseModel):
 
     name: str
     address: str = ""
+    phone: str = ""  # from Apify Google Maps (formatted phone number)
     coordinates: Coordinates
     rating: float = 0.0  # Google Maps stars (0-5)
     reviews: int = 0  # total review count
@@ -52,6 +53,7 @@ class Deal(BaseModel):
 class SelectedRestaurant(BaseModel):
     name: str
     address: str
+    phone: str = ""
     coordinates: Coordinates
     google_maps_rating: float
 
