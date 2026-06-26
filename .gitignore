@@ -51,3 +51,6 @@ discovery_raw.json
 discovery_mapped.json
 deals_raw.json
 deals_mapped.json
+
+# Kilo
+.kilo/

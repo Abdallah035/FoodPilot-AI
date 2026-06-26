@@ -8,7 +8,9 @@ from langgraph.types import Command
 
 from agent1_scout import nodes
 from agent1_scout.nodes import (
+    _coerce_no_deals_action,
     _coerce_quantity,
+    ask_no_deals_action,
     ask_user_deal,
     find_deals_node,
 )
@@ -28,6 +30,12 @@ def test_coerce_quantity_defaults_and_bounds():
     assert _coerce_quantity(0) == 1     # min 1
     assert _coerce_quantity(-5) == 1
     assert _coerce_quantity("abc") == 1
+
+
+def test_coerce_no_deals_action():
+    assert _coerce_no_deals_action(0) == "show_info"
+    assert _coerce_no_deals_action("1") == "choose_another"
+    assert _coerce_no_deals_action({"action": "choose_another"}) == "choose_another"
 
 
 # --- find_deals node wiring --------------------------------------------------
@@ -59,6 +67,7 @@ def test_graph_pauses_then_resumes_with_deal_and_quantity():
     assert "__interrupt__" in result  # paused at HITL #2
     payload = result["__interrupt__"][0].value
     assert payload["type"] == "select_deal"
+    assert payload["prompt"] == "اختر وجبة من القائمة بالرقم، ثم اكتب الكمية:"
     assert len(payload["options"]) == 3
 
     # user picks option 0 with quantity 2
@@ -75,3 +84,29 @@ def test_resume_with_plain_index_defaults_quantity_1():
     final = app.invoke(Command(resume=2), cfg)  # just an index
     assert final["selected_deal"]["item_name"] == "Pepperoni Pizza"
     assert final["selected_deal"]["quantity"] == 1
+
+
+def test_no_deals_interrupt_can_show_restaurant_info():
+    g = StateGraph(ScoutState)
+    g.add_node("ask_no_deals_action", ask_no_deals_action)
+    g.add_edge(START, "ask_no_deals_action")
+    g.add_edge("ask_no_deals_action", END)
+    app = g.compile(checkpointer=MemorySaver())
+    cfg = {"configurable": {"thread_id": "no-deals-1"}}
+
+    result = app.invoke({
+        "selected_restaurant": {
+            "name": "Koshary House",
+            "address": "Tahrir, Cairo",
+            "phone": "01000000000",
+        }
+    }, cfg)
+    payload = result["__interrupt__"][0].value
+
+    assert payload["type"] == "no_deals"
+    assert payload["restaurant"]["phone"] == "01000000000"
+    assert payload["options"][0]["action"] == "show_info"
+    assert payload["options"][1]["action"] == "choose_another"
+
+    final = app.invoke(Command(resume=0), cfg)
+    assert final["no_deals_action"] == "show_info"

@@ -33,20 +33,55 @@ def _dataset_id(run) -> str:
 
 def _map_place(place: dict) -> Optional[Restaurant]:
     """Convert one raw Apify place dict into a Restaurant (or None if unusable)."""
-    loc = place.get("location") or {}
-    lat, lng = loc.get("lat"), loc.get("lng")
-    if lat is None or lng is None:
+    coords = _coordinates_from_place(place)
+    if coords is None:
         return None  # we need coordinates for distance scoring
 
     return Restaurant(
         name=place.get("title") or "Unknown",
         address=place.get("address") or "",
         phone=place.get("phone") or place.get("phoneUnformatted") or "",
-        coordinates=Coordinates(lat=float(lat), lon=float(lng)),
+        coordinates=coords,
         rating=float(place.get("totalScore") or 0.0),
         reviews=int(place.get("reviewsCount") or 0),
         price_level=place.get("price"),  # e.g. "$$" or None
     )
+
+
+def _coordinates_from_place(place: dict) -> Optional[Coordinates]:
+    """Extract coordinates from one raw Apify place dict."""
+    loc = place.get("location") or {}
+    lat, lng = loc.get("lat"), loc.get("lng")
+    if lat is None or lng is None:
+        return None
+    return Coordinates(lat=float(lat), lon=float(lng))
+
+
+def geocode_location(location_query: str) -> Optional[Coordinates]:
+    """Resolve a location text query to coordinates using the Apify Maps actor."""
+    if not config.APIFY_API_TOKEN:
+        raise RuntimeError(
+            "APIFY_API_TOKEN is not set. Add it to your .env or pass --lat and --lon explicitly."
+        )
+
+    from apify_client import ApifyClient
+
+    client = ApifyClient(config.APIFY_API_TOKEN)
+    run_input = {
+        "searchStringsArray": [location_query],
+        "maxCrawledPlacesPerSearch": 1,
+        "language": "en",
+    }
+
+    run = client.actor(ACTOR_ID).call(run_input=run_input)
+    dataset_id = _dataset_id(run)
+
+    for item in client.dataset(dataset_id).iterate_items():
+        coords = _coordinates_from_place(item)
+        if coords is not None:
+            return coords
+
+    return None
 
 
 def search_restaurants(

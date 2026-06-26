@@ -26,6 +26,10 @@ MAX_DISTANCE_KM = float(os.getenv("MAX_DISTANCE_KM", "10"))
 
 LANGSMITH_TRACING = os.getenv("LANGSMITH_TRACING", "").lower() == "true"
 
+if LANGSMITH_TRACING and not LANGSMITH_API_KEY:
+    os.environ["LANGSMITH_TRACING"] = "false"
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
+
 
 def has_groq() -> bool:
     return bool(GROQ_API_KEY)

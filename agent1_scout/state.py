@@ -89,6 +89,9 @@ class ScoutState(TypedDict, total=False):
     # produced by find_deals
     found_deals: list  # list[Deal]
 
+    # set when no menu/deals are found for selected_restaurant
+    no_deals_action: str  # "show_info" | "choose_another"
+
     # set by HITL #2
     selected_deal: dict  # Deal
 

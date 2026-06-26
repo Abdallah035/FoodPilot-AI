@@ -12,10 +12,9 @@ from agent1_scout import config
 
 
 def test_tracing_config_flag():
-    # mirrors what's in .env: tracing on + key present
     assert isinstance(config.tracing_enabled(), bool)
-    if config.LANGSMITH_TRACING:
-        assert config.LANGSMITH_API_KEY, "tracing on but no LANGSMITH_API_KEY"
+    if config.LANGSMITH_TRACING and not config.LANGSMITH_API_KEY:
+        assert config.tracing_enabled() is False
 
 
 @pytest.mark.skipif(

@@ -50,7 +50,7 @@ for r in results:
             f"  OK {src:<6} {r['name']:<30} "
             f"'{r['quantity']}' = {r['quantity_grams']}g "
             f"x {r['calories_per_100g']} cal/100g "
-            f"= {r['total_calories']} kcal"
+            f"= {r['calories_per_meal']} kcal"
         )
     else:
         print(f"  --         {r['name']:<30} NOT FOUND anywhere")
@@ -61,7 +61,7 @@ output = [
         "name":           r["name"],
         "quantity":       r["quantity"],
         "quantity_grams": r["quantity_grams"],
-        "total_calories": r["total_calories"],
+        "calories_per_meal": r["calories_per_meal"],
         "found":          r["found"],
     }
     for r in results

@@ -65,3 +65,58 @@ def test_full_graph_end_to_end(monkeypatch):
     assert payload["selected_deal"]["quantity"] == 3
     # exact spec keys
     assert set(payload.keys()) == {"order_status", "user_intent", "selected_restaurant", "selected_deal"}
+
+
+def test_graph_no_deals_can_return_restaurant_info(monkeypatch):
+    monkeypatch.setattr(nodes, "parse_intent", lambda q: Intent(food_entity="burger", budget=None))
+    monkeypatch.setattr(nodes, "search_restaurants", lambda food, loc, n=5: _restaurants())
+    monkeypatch.setattr(nodes, "find_deals", lambda name, food: [])
+
+    app = build_graph()
+    cfg = {"configurable": {"thread_id": "no-deals-full-1"}}
+    state = {
+        "user_query": "I'm craving a good burger",
+        "location_query": "Maadi, Cairo",
+        "user_coords": {"lat": 29.9600, "lon": 31.2600},
+    }
+
+    app.invoke(state, cfg)
+    result = app.invoke(Command(resume=0), cfg)
+    payload = result["__interrupt__"][0].value
+    assert payload["type"] == "no_deals"
+
+    final = app.invoke(Command(resume=0), cfg)
+    assert final["no_deals_action"] == "show_info"
+    assert "payload" not in final
+
+
+def test_graph_no_deals_can_choose_another_restaurant(monkeypatch):
+    calls = []
+
+    def fake_find_deals(name, food):
+        calls.append(name)
+        if name == "Burger House":
+            return []
+        return [Deal(item_name="Single Burger", price="120")]
+
+    monkeypatch.setattr(nodes, "parse_intent", lambda q: Intent(food_entity="burger", budget=None))
+    monkeypatch.setattr(nodes, "search_restaurants", lambda food, loc, n=5: _restaurants())
+    monkeypatch.setattr(nodes, "find_deals", fake_find_deals)
+
+    app = build_graph()
+    cfg = {"configurable": {"thread_id": "no-deals-full-2"}}
+    state = {
+        "user_query": "I'm craving a good burger",
+        "location_query": "Maadi, Cairo",
+        "user_coords": {"lat": 29.9600, "lon": 31.2600},
+    }
+
+    app.invoke(state, cfg)
+    app.invoke(Command(resume=0), cfg)
+    result = app.invoke(Command(resume=1), cfg)
+    assert result["__interrupt__"][0].value["type"] == "select_restaurant"
+
+    result = app.invoke(Command(resume=1), cfg)
+    payload = result["__interrupt__"][0].value
+    assert payload["type"] == "select_deal"
+    assert calls == ["Burger House", "Smash Bros"]

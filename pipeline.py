@@ -12,8 +12,8 @@ from agent1_scout.state import OrderPayload
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_RAG_JSON = PROJECT_ROOT / "RAG" / "data.json"
 DEFAULT_RAG_PERSIST_DIR = PROJECT_ROOT / "RAG" / "chroma_dishes_db"
-RagDependencies = tuple[Any, Any, Any, Any, list[dict[str, Any]]]
-RagQuery = Callable[[str, Any, Any, Any, Any, list[dict[str, Any]]], tuple[str, list[str]]]
+RagDependencies = tuple[Any, Any, list[dict[str, Any]]]
+RagCalculator = Callable[[list[dict[str, Any]], Any, Any, list[dict[str, Any]] | None, str], list[dict[str, Any]]]
 
 
 def _as_dict(payload: dict[str, Any] | OrderPayload) -> dict[str, Any]:
@@ -26,7 +26,10 @@ def _compact_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def _load_rag_dependencies(json_path: str | os.PathLike[str] | None = None) -> RagDependencies:
+def _load_rag_dependencies(
+    json_path: str | os.PathLike[str] | None = None,
+    persist_dir: str | os.PathLike[str] | None = None,
+) -> RagDependencies:
     from RAG.Rag import build_rag_pipeline
 
     api_key = os.getenv("GROQ_API_KEY")
@@ -34,7 +37,7 @@ def _load_rag_dependencies(json_path: str | os.PathLike[str] | None = None) -> R
         raise EnvironmentError("GROQ_API_KEY is required for RAG enrichment.")
 
     path = Path(json_path or DEFAULT_RAG_JSON)
-    return build_rag_pipeline(str(path), api_key, str(DEFAULT_RAG_PERSIST_DIR))
+    return build_rag_pipeline(str(path), api_key, str(persist_dir or DEFAULT_RAG_PERSIST_DIR))
 
 
 @lru_cache(maxsize=1)
@@ -42,31 +45,112 @@ def _cached_rag_dependencies() -> RagDependencies:
     return _load_rag_dependencies()
 
 
-def _build_rag_question(payload: dict[str, Any]) -> str:
+def _portion_to_grams(portion: str, quantity: int | float) -> float | None:
+    text = portion.lower().strip()
+    if not text:
+        return None
+
+    if re.search(r"\b(half|1/2)\b|نص|نصف", text):
+        return 500.0 * quantity
+    if re.search(r"\b(quarter|1/4)\b|ربع", text):
+        return 250.0 * quantity
+
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(kg|kilo|kilogram|kilograms|كيلو)", text)
+    if match:
+        return float(match.group(1)) * 1000.0 * quantity
+
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(g|gram|grams|جرام|غرام)", text)
+    if match:
+        return float(match.group(1)) * quantity
+
+    return None
+
+
+def _build_rag_order(payload: dict[str, Any]) -> list[dict[str, Any]]:
     deal = payload.get("selected_deal", {})
-    item_name = _compact_text(deal.get("item_name"))
+    user_intent = _compact_text(payload.get("user_intent"))
+    item_name = user_intent or _compact_text(deal.get("item_name"))
     description = _compact_text(deal.get("deal_description"))
     portion = _compact_text(deal.get("portion"))
+    quantity = deal.get("quantity", 1) or 1
 
-    parts = [item_name]
+    try:
+        quantity_count = float(quantity)
+    except (TypeError, ValueError):
+        quantity_count = 1.0
+
+    grams = _portion_to_grams(portion, quantity_count)
+    if grams is not None:
+        order_quantity: str | float = grams
+    elif portion:
+        order_quantity = f"{int(quantity_count) if quantity_count.is_integer() else quantity_count} {portion} serving(s)"
+    else:
+        order_quantity = f"{int(quantity_count) if quantity_count.is_integer() else quantity_count} meal(s)"
+
+    context = " | ".join(part for part in (user_intent, description, portion) if part)
+    item = {"name": item_name, "quantity": order_quantity}
+    if context:
+        item["context"] = context
+    return [item]
+
+
+def _format_rag_answer(payload: dict[str, Any], items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "Nutrition data was not available for this order."
+
+    deal = payload.get("selected_deal", {})
+    description = _compact_text(deal.get("deal_description"))
+    lines = []
+    for item in items:
+        name = _compact_text(item.get("name")) or "Selected item"
+        calories = item.get("calories_per_meal")
+        grams = item.get("quantity_grams")
+        source = item.get("source") or "unknown source"
+        if calories is None:
+            lines.append(f"{name}: calorie data was not found.")
+            continue
+        grams_text = f" for about {grams:g}g" if isinstance(grams, (int, float)) else ""
+        lines.append(f"{name}: approximately {calories:g} calories{grams_text} ({source}).")
+
     if description:
-        parts.append(description)
-    if portion:
-        parts.append(f"portion: {portion}")
+        lines.append(f"Deal context: {description}.")
 
-    dish = " - ".join(part for part in parts if part)
-    return (
-        "Find nutrition and ingredient information for this ordered dish. "
-        "Return calories, key ingredients, and any relevant notes. "
-        f"Dish: {dish}"
-    )
+    return " ".join(lines)
+
+
+def _rag_sources(items: list[dict[str, Any]]) -> list[str]:
+    sources = []
+    for item in items:
+        source = item.get("source")
+        if source:
+            sources.append(f"{item.get('name', 'item')} ({source})")
+    return sources
+
+
+def _rag_status(items: list[dict[str, Any]]) -> str:
+    if items and all(item.get("found") for item in items):
+        return "completed"
+    return "partial"
+
+
+def _calculate_rag_calories(
+    order: list[dict[str, Any]],
+    vectorstore: Any,
+    llm: Any,
+    all_dishes: list[dict[str, Any]] | None,
+    json_path: str,
+) -> list[dict[str, Any]]:
+    from RAG.Rag import calculate_order_calories
+
+    return calculate_order_calories(order, vectorstore, llm, all_dishes=all_dishes, json_path=json_path)
 
 
 def enrich_payload_with_rag(
     payload: dict[str, Any] | OrderPayload,
     *,
     rag_dependencies: RagDependencies | None = None,
-    rag_query: RagQuery | None = None,
+    rag_calculator: RagCalculator | None = None,
+    json_path: str | os.PathLike[str] | None = None,
     enabled: bool = True,
 ) -> dict[str, Any]:
     """Add Agent 2/RAG nutrition context without changing Scout's payload contract."""
@@ -78,28 +162,29 @@ def enrich_payload_with_rag(
                 "status": "skipped",
                 "answer": "",
                 "sources": [],
+                "items": [],
             },
         }
 
     try:
         deps = rag_dependencies or _cached_rag_dependencies()
-        if rag_query is None:
-            from RAG.Rag import query_rag as rag_query
-
-        retriever, vectorstore, llm, prompt, all_dishes = deps
-        answer, sources = rag_query(
-            _build_rag_question(payload_dict),
-            retriever,
+        vectorstore, llm, all_dishes = deps
+        calculator = rag_calculator or _calculate_rag_calories
+        items = calculator(
+            _build_rag_order(payload_dict),
             vectorstore,
             llm,
-            prompt,
             all_dishes,
+            str(json_path or DEFAULT_RAG_JSON),
         )
-        status = "completed"
+        answer = _format_rag_answer(payload_dict, items)
+        sources = _rag_sources(items)
+        status = _rag_status(items)
         error = ""
     except Exception as exc:
         answer = ""
         sources = []
+        items = []
         status = "failed"
         error = str(exc)
 
@@ -107,6 +192,7 @@ def enrich_payload_with_rag(
         "status": status,
         "answer": answer,
         "sources": sources,
+        "items": items,
     }
     if error:
         enrichment["error"] = error
@@ -139,7 +225,8 @@ def run_post_scout_pipeline(
     payload: dict[str, Any] | OrderPayload,
     *,
     rag_dependencies: RagDependencies | None = None,
-    rag_query: RagQuery | None = None,
+    rag_calculator: RagCalculator | None = None,
+    rag_json_path: str | os.PathLike[str] | None = None,
     rag_enabled: bool = True,
     finalizer_app: Any | None = None,
 ) -> dict[str, Any]:
@@ -147,7 +234,8 @@ def run_post_scout_pipeline(
     enriched = enrich_payload_with_rag(
         payload,
         rag_dependencies=rag_dependencies,
-        rag_query=rag_query,
+        rag_calculator=rag_calculator,
+        json_path=rag_json_path,
         enabled=rag_enabled,
     )
     finalizer_state = finalize_order(

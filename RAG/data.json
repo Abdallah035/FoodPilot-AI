@@ -1257,5 +1257,21 @@
     "ingredients": [],
     "id": 101,
     "source": "web_search"
+  },
+  {
+    "name": "علبة توب",
+    "description": "طبق تم إضافته تلقائياً عبر البحث على الإنترنت.",
+    "calories_per_100g": "155 سعرة لكل 100 غرام",
+    "ingredients": [],
+    "id": 102,
+    "source": "web_search"
+  },
+  {
+    "name": "برجر",
+    "description": "طبق تم إضافته تلقائياً عبر البحث على الإنترنت.",
+    "calories_per_100g": "247 سعرة لكل 100 غرام",
+    "ingredients": [],
+    "id": 103,
+    "source": "web_search"
   }
 ]

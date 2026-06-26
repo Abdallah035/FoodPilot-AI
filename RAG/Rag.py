@@ -322,7 +322,7 @@ def parse_quantity_to_grams(dish_name: str, quantity: str | float, llm: ChatGroq
 # 8. CALORIE AGENT  ← main entry point
 #    Input:  [{"name": str, "quantity": str | float}, ...]
 #    Output: [{"name": str, "quantity_grams": float,
-#              "total_calories": float, "found": bool,
+#              "calories_per_meal": float, "found": bool,
 #              "source": "rag" | "web" | None}, ...]
 # ─────────────────────────────────────────────
 def _parse_cal_per_100g(cal_str: str) -> float | None:
@@ -355,7 +355,7 @@ def calculate_order_calories(
                     "quantity":          quantity,
                     "quantity_grams":    quantity_grams,
                     "calories_per_100g": None,
-                    "total_calories":    None,
+                    "calories_per_meal":    None,
                     "found":             False,
                     "source":            None,
                 })
@@ -365,7 +365,7 @@ def calculate_order_calories(
                     "quantity":          quantity,
                     "quantity_grams":    quantity_grams,
                     "calories_per_100g": cal_per_100g,
-                    "total_calories":    round((cal_per_100g / 100) * quantity_grams, 1),
+                    "calories_per_meal":    round((cal_per_100g / 100) * quantity_grams, 1),
                     "found":             True,
                     "source":            "web",
                 })
@@ -377,7 +377,7 @@ def calculate_order_calories(
             "quantity":          quantity,
             "quantity_grams":    quantity_grams,
             "calories_per_100g": cal_per_100g,
-            "total_calories":    round((cal_per_100g / 100) * quantity_grams, 1) if cal_per_100g else None,
+            "calories_per_meal":    round((cal_per_100g / 100) * quantity_grams, 1) if cal_per_100g else None,
             "found":             True,
             "source":            "rag",
         })

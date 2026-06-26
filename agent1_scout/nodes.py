@@ -128,7 +128,7 @@ def ask_user_deal(state: ScoutState) -> dict:
     choice = interrupt(
         {
             "type": "select_deal",
-            "prompt": "Pick a deal (by number) and a quantity:",
+            "prompt": "اختر وجبة من القائمة بالرقم، ثم اكتب الكمية:",
             "options": [
                 {
                     "index": i,
@@ -136,6 +136,7 @@ def ask_user_deal(state: ScoutState) -> dict:
                     "price": d["price"],
                     "currency": d["currency"],
                     "deal_description": d["deal_description"],
+                    "portion": d.get("portion", ""),
                 }
                 for i, d in enumerate(options)
             ],
@@ -150,6 +151,38 @@ def ask_user_deal(state: ScoutState) -> dict:
     selected = dict(options[index])
     selected["quantity"] = quantity
     return {"selected_deal": selected}
+
+
+def ask_no_deals_action(state: ScoutState) -> dict:
+    """HITL fallback when no menu/deals are available for the selected restaurant."""
+    restaurant = state["selected_restaurant"]
+    choice = interrupt(
+        {
+            "type": "no_deals",
+            "prompt": "لم نتمكن من العثور على قائمة طعام لهذا المطعم. ماذا تريد أن تفعل؟",
+            "restaurant": {
+                "name": restaurant.get("name", ""),
+                "address": restaurant.get("address", ""),
+                "phone": restaurant.get("phone", ""),
+            },
+            "options": [
+                {"index": 0, "action": "show_info", "label": "اعرض الموقع ورقم الهاتف"},
+                {"index": 1, "action": "choose_another", "label": "اعرض مطاعم أخرى للاختيار"},
+            ],
+        }
+    )
+    return {"no_deals_action": _coerce_no_deals_action(choice)}
+
+
+def _coerce_no_deals_action(choice) -> str:
+    if isinstance(choice, dict):
+        action = choice.get("action")
+        if action in {"show_info", "choose_another"}:
+            return action
+        choice = choice.get("index", choice.get("choice"))
+
+    index = _coerce_index(choice, 2)
+    return "show_info" if index == 0 else "choose_another"
 
 
 def compile_payload(state: ScoutState) -> dict:

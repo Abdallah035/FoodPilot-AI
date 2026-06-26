@@ -193,8 +193,13 @@ cp .env.example .env
 
 # 3. run the CLI agent
 uv run python main.py
+uv run python main.py --query "I'm craving a good burger" --location "Maadi, Cairo"
 uv run python main.py --query "I'm craving a good burger" --location "Maadi, Cairo" --lat 29.96 --lon 31.26
 ```
+
+When `--lat` and `--lon` are omitted, the CLI resolves `--location` through the
+existing Apify Google Maps actor. Passing explicit coordinates avoids that extra
+Apify call and is the fallback if a location cannot be resolved.
 
 The CLI prints the **top 3 restaurants** (pick a number), then the **deals**
 (pick a number + quantity), then the **final JSON payload**.
@@ -235,7 +240,7 @@ Every task has its own test file:
 
 ### Live suite (opt-in — hits real APIs, costs credits)
 ```bash
-RUN_APIFY=1   uv run pytest tests/test_discovery.py        # real Apify Maps
+$env:RUN_APIFY="1"; uv run pytest tests/test_discovery.py # real Apify Maps
 RUN_TALABAT=1 uv run pytest tests/test_deals_talabat.py    # real Tavily+Talabat
 RUN_TAVILY=1  uv run pytest tests/test_deals_fallback.py   # real Tavily+Groq
 RUN_DEALS=1   uv run pytest tests/test_find_deals.py       # full deal pipeline

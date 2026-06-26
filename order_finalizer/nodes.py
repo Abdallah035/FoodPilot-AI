@@ -98,9 +98,9 @@ def calculate_price_node(state: FinalizerState) -> dict:
     price_str = deal.get("price", "0") if isinstance(deal, dict) else (deal.price or "0")
     quantity = deal.get("quantity", 1) if isinstance(deal, dict) else (deal.quantity or 1)
     
-    # extract numeric value from price_str (e.g. "150 EGP")
-    match = re.search(r'([\d\.]+)', price_str)
-    unit_price = float(match.group(1)) if match else 0.0
+    # Accept common currency strings such as "150 EGP" and "1,200 EGP".
+    match = re.search(r'(\d[\d,]*(?:\.\d+)?)', str(price_str))
+    unit_price = float(match.group(1).replace(',', '')) if match else 0.0
     base_price = unit_price * quantity
     
     final_price = base_price
@@ -122,6 +122,7 @@ def generate_receipt_node(state: FinalizerState) -> dict:
     restaurant = payload["selected_restaurant"] if isinstance(payload, dict) else payload.selected_restaurant
     
     restaurant_name = restaurant["name"] if isinstance(restaurant, dict) else restaurant.name
+    restaurant_phone = restaurant.get("phone", "") if isinstance(restaurant, dict) else restaurant.phone
     item_name = deal["item_name"] if isinstance(deal, dict) else deal.item_name
     quantity = deal.get("quantity", 1) if isinstance(deal, dict) else (deal.quantity or 1)
     original_price = deal.get("price", "0 EGP") if isinstance(deal, dict) else deal.price
@@ -139,7 +140,7 @@ You are a helpful customer service assistant for Food Pilot.
 Generate a friendly markdown receipt for the user.
 
 Restaurant: {restaurant_name}
-(Contact info will be provided here soon)
+Phone: {restaurant_phone}
 
 Item Ordered: {item_name}
 Original Price: {original_price}
@@ -160,6 +161,7 @@ Format this nicely using Markdown. If there is a promo, explicitly tell the user
     chain = prompt | llm | StrOutputParser()
     receipt = chain.invoke({
         "restaurant_name": restaurant_name,
+        "restaurant_phone": restaurant_phone or "Not available",
         "item_name": item_name,
         "original_price": original_price,
         "promo_details": promo_details,
