@@ -2,6 +2,11 @@ import json
 import os
 import re
 import shutil
+import sys
+
+# allow `import config` to find the project root when this file is run directly
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from ddgs import DDGS
 
 from langchain_core.documents import Document
@@ -382,7 +387,168 @@ def calculate_order_calories(
 # UTILITY: wipe ChromaDB to force a rebuild
 # Run once after changing data.json or the embedding model.
 # ─────────────────────────────────────────────
+def web_search_dish_details(
+    dish_name:   str,
+    llm:         object,
+    vectorstore: object,
+    all_dishes:  list[dict],
+    json_path:   str,
+) -> dict | None:
+    """Search the web for description, ingredients, and calories, then persist."""
+    queries = [
+        f"{dish_name} description ingredients and calories per 100g",
+        f"{dish_name} وصف ومكونات وسعرات حرارية",
+    ]
+
+    raw_results = []
+    for query in queries:
+        print(f"   [WebSearch] Searching: '{query}'")
+        try:
+            with DDGS() as ddgs:
+                raw_results = list(ddgs.text(query, max_results=4))
+            if raw_results:
+                break
+        except Exception as e:
+            print(f"   [WebSearch] Search error: {e}")
+            continue
+
+    if not raw_results:
+        print(f"   [WebSearch] No results found for '{dish_name}'.")
+        return None
+
+    snippets = "\n".join(
+        f"- {r.get('title','')}: {r.get('body','')}"
+        for r in raw_results
+    )
+
+    extract_prompt = ChatPromptTemplate.from_template(
+        """أنت خبير تغذية وطباخ محترف. استخرج تفاصيل الطبق التالي بناءً على نتائج البحث.
+
+الطبق: {dish}
+
+نتائج البحث:
+{snippets}
+
+مهم جداً: أجب بتنسيق JSON فقط يحتوي على الحقول التالية:
+- "name": اسم الطبق باللغة العربية
+- "description": وصف قصير ومميز للطبق باللغة العربية
+- "calories_per_100g": عدد السعرات الحرارية لكل 100 جرام (مثال: "150 سعرة لكل 100 غرام")
+- "ingredients": قائمة بالمكونات الرئيسية للطبق باللغة العربية
+
+إذا لم تجد معلومات دقيقة، قدّر المكونات والسعرات بناءً على معرفتك بالطبق.
+لا تكتب أي نصوص خارج الـ JSON.
+
+مخرج الـ JSON:"""
+    )
+
+    raw = (extract_prompt | llm | StrOutputParser()).invoke(
+        {"dish": dish_name, "snippets": snippets}
+    ).strip()
+
+    try:
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if match:
+            dish_data = json.loads(match.group(0))
+            if "name" in dish_data and "calories_per_100g" in dish_data:
+                persisted = persist_new_dish(
+                    dish_data=dish_data,
+                    json_path=json_path,
+                    vectorstore=vectorstore,
+                    all_dishes=all_dishes,
+                )
+                return persisted
+    except Exception as e:
+        print(f"   [WebSearch] JSON parse / persist error: {e}")
+
+    return None
+
+
+def query_rag(
+    query: str,
+    vectorstore: object,
+    llm: object,
+    all_dishes: list[dict],
+    json_path: str,
+) -> str:
+    """Answer a free-text question about a dish using RAG with web fallback."""
+    extract_dish_prompt = ChatPromptTemplate.from_template(
+        """أنت خبير في تصنيف الأغذية. استخرج اسم الطبق أو الأكلة الرئيسي المذكور في السؤال التالي.
+السؤال: {query}
+أجب باسم الأكلة فقط، دون أي كلمات أخرى أو علامات ترقيم. إذا كان هناك أكثر من أكلة، اختر الأكلة الرئيسية.
+اسم الأكلة:"""
+    )
+    dish_name = (extract_dish_prompt | llm | StrOutputParser()).invoke({"query": query}).strip()
+    dish_name = re.sub(r'["\'\.]', '', dish_name).strip()
+
+    print(f"   [RAG Query] Extracted dish name: '{dish_name}'")
+
+    meta = lookup_dish_by_name(dish_name, vectorstore)
+    dish = None
+    if meta:
+        dish_id = int(meta.get("id"))
+        dish = next((d for d in all_dishes if d["id"] == dish_id), None)
+
+    if not dish:
+        print(f"   [RAG Query] Dish '{dish_name}' not found in RAG. Performing web search fallback...")
+        dish = web_search_dish_details(dish_name, llm, vectorstore, all_dishes, json_path)
+
+    if not dish:
+        return f"عذراً، لم أتمكن من العثور على معلومات عن طبق '{dish_name}'."
+
+    answer_prompt = ChatPromptTemplate.from_template(
+        """أنت خبير تغذية ومساعد عملاء ودود في Food Pilot.
+أجب عن سؤال العميل التالي بدقة ومودة، مستعيناً بالمعلومات المتاحة عن الطبق.
+
+سؤال العميل: {query}
+
+معلومات الطبق:
+- اسم الطبق: {name}
+- الوصف: {description}
+- السعرات الحرارية: {calories}
+- المكونات: {ingredients}
+
+صِغ الإجابة باللغة التي سأل بها العميل (سواء كانت العربية أو الإنجليزية). كن مفصلاً وودوداً.
+الإجابة:"""
+    )
+
+    ingredients_str = "، ".join(dish.get("ingredients", []))
+    answer = (answer_prompt | llm | StrOutputParser()).invoke({
+        "query": query,
+        "name": dish.get("name"),
+        "description": dish.get("description"),
+        "calories": dish.get("calories_per_100g"),
+        "ingredients": ingredients_str or "غير محددة",
+    }).strip()
+
+    return answer
+
+
+# ─────────────────────────────────────────────
+# UTILITY: wipe ChromaDB to force a rebuild
+# Run once after changing data.json or the embedding model.
+# ─────────────────────────────────────────────
 def reset_vectorstore(persist_dir: str = "./chroma_dishes_db"):
     if os.path.exists(persist_dir):
         shutil.rmtree(persist_dir)
         print(f"  Deleted '{persist_dir}'. Will rebuild on next run.")
+
+
+# ─────────────────────────────────────────────
+# 9. CALORIE FILTER
+#    Returns dish names whose estimated serving calories
+#    (cal_per_100g * 2.5 for a 250g portion) fall under the limit.
+# ─────────────────────────────────────────────
+def find_dishes_by_calorie_constraint(
+    calorie_limit: float,
+    all_dishes: list[dict],
+) -> list[str]:
+    matching_dishes = []
+    for dish in all_dishes:
+        cal_str = dish.get("calories_per_100g", "")
+        match = re.search(r'\d+', str(cal_str))
+        if match:
+            cal_100g = float(match.group())
+            # 250g standard serving estimate
+            if cal_100g * 2.5 <= calorie_limit:
+                matching_dishes.append(dish["name"])
+    return matching_dishes
