@@ -6,7 +6,7 @@ Supports **Egyptian Arabic and English**, e.g.:
     - "عايز كفتة"                       -> كفتة
     - "أرخص بيتزا"                       -> بيتزا, budget "$"
 
-Uses the Groq LLM with structured output. There is no heuristic fallback: a
+Uses Azure OpenAI with structured output. There is no heuristic fallback: a
 keyword stripper cannot parse Arabic reliably and risks wrong / double-meaning
 results, so we fail loudly if the LLM is unavailable.
 """
@@ -17,7 +17,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from . import config
+import config
 
 
 class Intent(BaseModel):
@@ -46,18 +46,11 @@ _SYSTEM = (
 
 
 def parse_intent(user_query: str) -> Intent:
-    """Parse a craving (Arabic or English) into an `Intent` using Groq.
+    """Parse a craving (Arabic or English) into an `Intent` using Azure OpenAI.
 
-    Raises if no Groq key is configured or the call fails — we do not guess.
+    Raises if Azure OpenAI is not configured or the call fails — we do not guess.
     """
-    if not config.has_groq():
-        raise RuntimeError(
-            "GROQ_API_KEY is not set. Add it to your .env to parse intents."
-        )
-
-    from langchain_groq import ChatGroq
-
-    llm = ChatGroq(model=config.GROQ_MODEL, temperature=0, api_key=config.GROQ_API_KEY)
+    llm = config.get_azure_openai_llm(temperature=0)
     structured = llm.with_structured_output(Intent)
     return structured.invoke(
         [

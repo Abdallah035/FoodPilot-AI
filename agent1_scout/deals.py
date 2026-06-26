@@ -20,7 +20,7 @@ import re
 from typing import Optional
 from urllib.parse import urlparse
 
-from . import config
+import config
 from .discovery import _dataset_id
 from .state import Deal
 

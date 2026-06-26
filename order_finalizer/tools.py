@@ -1,14 +1,14 @@
 from typing import List
 from tavily import TavilyClient
 
-from .config import TAVILY_API_KEY
+import config
 
 def search_promos(restaurant_name: str) -> str:
     """Uses Tavily to search for live promo codes for the restaurant."""
-    if not TAVILY_API_KEY:
+    if not config.TAVILY_API_KEY:
         raise ValueError("TAVILY_API_KEY is not set.")
         
-    client = TavilyClient(api_key=TAVILY_API_KEY)
+    client = TavilyClient(api_key=config.TAVILY_API_KEY)
     
     # Execute a focused search
     query = f"{restaurant_name} restaurant (promo code OR discount OR offer) Egypt 2026 Waffarha Talabat Elmenus"

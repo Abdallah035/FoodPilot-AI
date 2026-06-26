@@ -16,7 +16,7 @@ flowchart LR
     P --> NEXT["next agent<br/>(Food / Order)"]
 
     subgraph tools[" external tools "]
-      G["Groq LLM"]
+      G["Azure OpenAI LLM"]
       AP["Apify Maps"]
       TB["Talabat scraper"]
       TV["Tavily search"]
@@ -60,7 +60,7 @@ The interrupts use LangGraph's `interrupt()` + a checkpointer: the graph
 ```mermaid
 flowchart TD
     subgraph in[" 1. UNDERSTAND "]
-      Q["user_query"] --> INT["intent.py<br/>Groq · Arabic+English<br/>→ food_entity + budget"]
+      Q["user_query"] --> INT["intent.py<br/>Azure OpenAI · Arabic+English<br/>→ food_entity + budget"]
     end
 
     subgraph find[" 2. FIND + RANK "]
@@ -109,7 +109,7 @@ flowchart TD
     T -->|slug found| S["Apify Talabat scraper<br/>scrape THAT exact menu"]
     T -->|no Talabat page| W["Tavily open-web<br/>(Elmenus / blogs)"]
     S --> CLEAN["drop 0-EGP junk + dedupe"]
-    W --> EX["Groq extracts deals"]
+    W --> EX["Azure OpenAI extracts deals"]
     CLEAN --> EST["fill missing prices<br/>LLM estimate (flagged)"]
     EX --> EST
     EST --> D["clean Deal list<br/>(name · price · EGP)"]
@@ -150,7 +150,7 @@ nutrition agent.
 | Layer | Choice |
 |---|---|
 | Orchestration | **LangGraph** (nodes + `interrupt()` for human-in-the-loop) |
-| LLM | **Groq** (`langchain-groq`) — intent parsing, deal extraction, price estimate |
+| LLM | **Azure OpenAI** (`langchain-openai`) — intent parsing, deal extraction, price estimate |
 | Restaurants | **Apify** Google Maps Extractor |
 | Menu prices | **Apify** Talabat scraper (by slug) + **Tavily** web search |
 | Tracing | **LangSmith** (project `FoodPilot-AI`) |
@@ -161,8 +161,9 @@ nutrition agent.
 ## 8. Project layout
 
 ```
+config.py            root env + settings (Azure OpenAI, Apify, Tavily, LangSmith)
 agent1_scout/
-  config.py          env + settings (Groq, Apify, Tavily, LangSmith)
+  config.py          compatibility wrapper around root config.py
   state.py           ScoutState, Restaurant, Deal, OrderPayload
   intent.py          parse craving (Arabic/English) -> food + budget
   distance.py        Haversine km
@@ -189,7 +190,9 @@ uv sync
 
 # 2. set your keys
 cp .env.example .env
-#   fill: GROQ_API_KEY, APIFY_API_TOKEN, TAVILY_API_KEY, LANGSMITH_API_KEY
+#   fill: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT,
+#         AZURE_OPENAI_DEPLOYMENT_NAME, AZURE_OPENAI_API_VERSION,
+#         APIFY_API_TOKEN, TAVILY_API_KEY, LANGSMITH_API_KEY
 
 # 3. run the CLI agent
 uv run python main.py
@@ -223,7 +226,7 @@ Every task has its own test file:
 | Test file | Covers |
 |---|---|
 | `test_state.py` | data models + payload shape |
-| `test_intent.py` | Arabic + English intent (real Groq, auto-skips w/o key) |
+| `test_intent.py` | Arabic + English intent (real Azure OpenAI, auto-skips w/o config) |
 | `test_distance.py` | Haversine correctness |
 | `test_discovery.py` | Apify result mapping |
 | `test_scoring.py` | ranking formula (near+reviewed beats far+new) |
@@ -242,9 +245,9 @@ Every task has its own test file:
 ```bash
 $env:RUN_APIFY="1"; uv run pytest tests/test_discovery.py # real Apify Maps
 RUN_TALABAT=1 uv run pytest tests/test_deals_talabat.py    # real Tavily+Talabat
-RUN_TAVILY=1  uv run pytest tests/test_deals_fallback.py   # real Tavily+Groq
+$env:RUN_TAVILY="1"; uv run pytest tests/test_deals_fallback.py # real Tavily+Azure OpenAI
 RUN_DEALS=1   uv run pytest tests/test_find_deals.py       # full deal pipeline
-RUN_LIVE=1    uv run pytest tests/test_nodes.py            # real Groq+Apify
+RUN_LIVE=1    uv run pytest tests/test_nodes.py            # real Azure OpenAI+Apify
 RUN_TRACE=1   uv run pytest tests/test_tracing.py          # verify LangSmith trace
 ```
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from . import config
+import config
 from .state import Coordinates, Restaurant
 
 ACTOR_ID = "compass/google-maps-extractor"

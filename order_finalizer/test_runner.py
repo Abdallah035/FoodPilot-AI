@@ -1,13 +1,9 @@
 import os
 import sys
 import types
-from dotenv import load_dotenv
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding='utf-8')
-
-# Load environment variables
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
 
 # Add the root folder to sys.path
 root_dir = os.path.dirname(os.path.dirname(__file__))

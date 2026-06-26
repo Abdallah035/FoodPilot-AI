@@ -5,11 +5,9 @@ A live actor-call test is gated behind RUN_APIFY=1 because it is slow and
 consumes Apify credits.
 """
 
-import os
-
 import pytest
 
-from agent1_scout import config
+import config
 from agent1_scout.discovery import _coordinates_from_place, _map_place, geocode_location, search_restaurants
 from agent1_scout.state import Coordinates, Restaurant
 
@@ -124,7 +122,7 @@ def test_geocode_location_returns_none_without_usable_coords(monkeypatch):
     assert geocode_location("Unknown place") is None
 
 
-@pytest.mark.skipif(os.getenv("RUN_APIFY") != "1", reason="set RUN_APIFY=1 to hit Apify")
+@pytest.mark.skipif(not config.RUN_APIFY, reason="set RUN_APIFY=1 to hit Apify")
 def test_search_restaurants_live():
     results = search_restaurants("burger", "Maadi, Cairo", n=5)
     assert len(results) >= 1
@@ -132,7 +130,7 @@ def test_search_restaurants_live():
     assert all(r.coordinates for r in results)
 
 
-@pytest.mark.skipif(os.getenv("RUN_APIFY") != "1", reason="set RUN_APIFY=1 to hit Apify")
+@pytest.mark.skipif(not config.RUN_APIFY, reason="set RUN_APIFY=1 to hit Apify")
 def test_geocode_location_live():
     coords = geocode_location("Maadi, Cairo")
     assert coords is not None

@@ -2,29 +2,15 @@ from __future__ import annotations
 import json
 import re
 
-from langchain_openai import AzureChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+import config
 from .state import FinalizerState, VerifiedPromo
 from .tools import search_promos
-from .config import (
-    AZURE_OPENAI_API_KEY,
-    AZURE_OPENAI_ENDPOINT,
-    AZURE_OPENAI_DEPLOYMENT_NAME,
-    AZURE_OPENAI_API_VERSION
-)
 
 def get_llm():
-    if not AZURE_OPENAI_API_KEY:
-        raise EnvironmentError("AZURE_OPENAI_API_KEY is not set.")
-    return AzureChatOpenAI(
-        azure_deployment=AZURE_OPENAI_DEPLOYMENT_NAME,
-        openai_api_version=AZURE_OPENAI_API_VERSION,
-        azure_endpoint=AZURE_OPENAI_ENDPOINT,
-        api_key=AZURE_OPENAI_API_KEY,
-        temperature=0.0
-    )
+    return config.get_azure_openai_llm(temperature=0.0)
 
 def search_promos_node(state: FinalizerState) -> dict:
     # Handle both dict and BaseModel depending on how it's passed

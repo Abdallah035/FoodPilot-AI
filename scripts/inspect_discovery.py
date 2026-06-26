@@ -15,7 +15,7 @@ import sys
 
 from apify_client import ApifyClient
 
-from agent1_scout import config
+import config
 from agent1_scout.discovery import ACTOR_ID, _dataset_id, _map_place
 
 

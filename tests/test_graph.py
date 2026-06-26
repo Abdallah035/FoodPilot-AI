@@ -21,7 +21,7 @@ def _restaurants():
 
 
 def test_full_graph_end_to_end(monkeypatch):
-    # mock intent (no Groq), Apify discovery, and deal lookup
+    # mock intent, Apify discovery, and deal lookup
     monkeypatch.setattr(nodes, "parse_intent", lambda q: Intent(food_entity="burger", budget=None))
     monkeypatch.setattr(nodes, "search_restaurants", lambda food, loc, n=5: _restaurants())
     monkeypatch.setattr(

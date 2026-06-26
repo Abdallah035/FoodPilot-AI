@@ -1,7 +1,7 @@
 """Task 8c — LLM price estimate for deals missing a price.
 
 Some fallback (open-web) deals arrive without a price. Rather than drop them, we
-ask Groq for a typical current EGP price and CLEARLY flag it as estimated by
+ask Azure OpenAI for a typical current EGP price and CLEARLY flag it as estimated by
 appending "(estimated price)" to the deal_description. Deals that already have a
 real price are returned unchanged.
 
@@ -11,7 +11,7 @@ in the human-readable description.)
 
 from __future__ import annotations
 
-from . import config
+import config
 from .state import Deal
 
 ESTIMATE_NOTE = "(estimated price)"
@@ -25,16 +25,13 @@ def _needs_price(d: Deal) -> bool:
 
 
 def _estimate_one(item_name: str, restaurant_name: str) -> str:
-    """Ask Groq for a plain numeric price. Returns digits, or "" on failure.
+    """Ask Azure OpenAI for a plain numeric price. Returns digits, or "" on failure.
 
     We deliberately avoid `with_structured_output` here: forcing a tool call for
-    a one-number answer makes Groq intermittently 400 with
-    "Tool choice is required, but model did not call a tool". A plain text reply
-    that we parse for digits is more robust for such a trivial output.
+    a one-number answer is unnecessary. A plain text reply that we parse for
+    digits is more robust for such a trivial output.
     """
-    from langchain_groq import ChatGroq
-
-    llm = ChatGroq(model=config.GROQ_MODEL, temperature=0, api_key=config.GROQ_API_KEY)
+    llm = config.get_azure_openai_llm(temperature=0)
     prompt = (
         "Estimate a typical current price in Egyptian Pounds (EGP) for this menu "
         f"item at a normal Egyptian restaurant.\n"
@@ -60,8 +57,8 @@ def estimate_missing_prices(deals: list[Deal], restaurant_name: str) -> list[Dea
     """Fill missing prices with a flagged LLM estimate; leave real prices as-is."""
     if not deals:
         return deals
-    if not config.has_groq():
-        raise RuntimeError("GROQ_API_KEY is not set. Add it to your .env.")
+    if not any(_needs_price(d) for d in deals):
+        return deals
 
     out: list[Deal] = []
     for d in deals:

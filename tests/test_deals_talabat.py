@@ -4,10 +4,9 @@ Covers: slug extraction from real Talabat URL formats, junk-price filtering,
 item mapping, dedupe, relevance filter. Live calls gated by RUN_TALABAT=1.
 """
 
-import os
-
 import pytest
 
+import config
 from agent1_scout.deals import (
     _dedupe,
     _filter_relevant,
@@ -105,7 +104,7 @@ def test_deals_are_selectable_with_quantity():
 
 
 # --- live (gated) ------------------------------------------------------------
-@pytest.mark.skipif(os.getenv("RUN_TALABAT") != "1", reason="set RUN_TALABAT=1 to hit Tavily+Talabat")
+@pytest.mark.skipif(not config.RUN_TALABAT, reason="set RUN_TALABAT=1 to hit Tavily+Talabat")
 def test_talabat_menu_live():
     deals = talabat_menu("Primo's Pizza", "pizza", country="eg")
     assert isinstance(deals, list)

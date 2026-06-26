@@ -1,10 +1,6 @@
 import os
 import sys
 import importlib.util
-from dotenv import load_dotenv
-
-# 1. Load environment variables first
-load_dotenv()
 
 # 2. Dynamically load the order_finalizer module (handling the hyphen in the folder name)
 folder_path = os.path.join(os.path.dirname(__file__), "order_finalizer")

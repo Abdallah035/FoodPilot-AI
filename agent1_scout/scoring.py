@@ -19,7 +19,7 @@ import math
 import re
 from typing import Optional
 
-from . import config
+import config
 from .distance import haversine_coords
 from .state import Restaurant
 

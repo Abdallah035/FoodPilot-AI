@@ -4,16 +4,14 @@ import re
 import shutil
 from ddgs import DDGS
 
-from dotenv import load_dotenv
-load_dotenv()
-
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain_groq import ChatGroq
+
+import config
 
 
 # ─────────────────────────────────────────────
@@ -79,9 +77,8 @@ def build_vectorstore(
 # ─────────────────────────────────────────────
 def build_rag_pipeline(
     json_path:    str,
-    groq_api_key: str,
     persist_dir:  str = "./chroma_dishes_db",
-) -> tuple[Chroma, ChatGroq, list[dict]]:
+) -> tuple[Chroma, object, list[dict]]:
     docs, all_dishes = load_documents(json_path)
     print(f" Loaded {len(docs)} dish documents from JSON.")
 
@@ -93,11 +90,7 @@ def build_rag_pipeline(
 
     vectorstore = build_vectorstore(docs, embeddings, persist_dir)
 
-    llm = ChatGroq(
-        api_key=groq_api_key,
-        model_name="llama-3.3-70b-versatile",
-        temperature=0.2,
-    )
+    llm = config.get_azure_openai_llm(temperature=0.2)
 
     return vectorstore, llm, all_dishes
 
@@ -200,7 +193,7 @@ def persist_new_dish(
 # ─────────────────────────────────────────────
 def web_search_calories(
     dish_name:   str,
-    llm:         ChatGroq,
+    llm:         object,
     vectorstore: Chroma,
     all_dishes:  list[dict],
     json_path:   str,
@@ -277,7 +270,7 @@ def web_search_calories(
 # 7. QUANTITY PARSER
 #    Converts Egyptian quantity expressions to grams.
 # ─────────────────────────────────────────────
-def parse_quantity_to_grams(dish_name: str, quantity: str | float, llm: ChatGroq) -> float:
+def parse_quantity_to_grams(dish_name: str, quantity: str | float, llm: object) -> float:
     if isinstance(quantity, (int, float)):
         return float(quantity)
 
@@ -333,7 +326,7 @@ def _parse_cal_per_100g(cal_str: str) -> float | None:
 def calculate_order_calories(
     order:       list[dict],
     vectorstore: Chroma,
-    llm:         ChatGroq,
+    llm:         object,
     all_dishes:  list[dict] | None = None,
     json_path:   str = "data.json",
 ) -> list[dict]:

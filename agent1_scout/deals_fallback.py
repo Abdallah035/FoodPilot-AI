@@ -2,7 +2,7 @@
 
 Used only when the restaurant isn't on Talabat (Task 8a returned []). Searches
 the open web (Elmenus, Otlob, blogs, the restaurant's own site) with Tavily,
-then uses Groq to extract structured `Deal` objects from the result snippets.
+then uses Azure OpenAI to extract structured `Deal` objects from the result snippets.
 
 Prices found here are less authoritative than Talabat; any item still missing a
 price is handled by the LLM estimate step (Task 8c).
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from . import config
+import config
 from .state import Deal
 
 # Egyptian food sources worth searching when Talabat has nothing.
@@ -54,8 +54,6 @@ def _tavily_web_results(restaurant_name: str, food_entity: str, max_results: int
 
 
 def _extract_deals(results: list[dict], restaurant_name: str, food_entity: str) -> list[Deal]:
-    from langchain_groq import ChatGroq
-
     if not results:
         return []
 
@@ -64,7 +62,7 @@ def _extract_deals(results: list[dict], restaurant_name: str, food_entity: str) 
         for r in results
     )
 
-    llm = ChatGroq(model=config.GROQ_MODEL, temperature=0, api_key=config.GROQ_API_KEY)
+    llm = config.get_azure_openai_llm(temperature=0)
     structured = llm.with_structured_output(DealList)
     prompt = (
         f"From the web results below, extract concrete menu items / deals for the "
@@ -86,12 +84,11 @@ def tavily_menu_fallback(
 ) -> list[Deal]:
     """Find menu deals from the open web when Talabat has no page.
 
-    Raises if TAVILY_API_KEY or GROQ_API_KEY is missing.
+    Raises if TAVILY_API_KEY or Azure OpenAI configuration is missing.
     """
     if not config.TAVILY_API_KEY:
         raise RuntimeError("TAVILY_API_KEY is not set. Add it to your .env.")
-    if not config.has_groq():
-        raise RuntimeError("GROQ_API_KEY is not set. Add it to your .env.")
+    config.require_azure_openai()
 
     results = _tavily_web_results(restaurant_name, food_entity, max_results=max_results)
     return _extract_deals(results, restaurant_name, food_entity)

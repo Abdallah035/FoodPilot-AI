@@ -18,7 +18,7 @@ import sys
 
 from apify_client import ApifyClient
 
-from agent1_scout import config
+import config
 from agent1_scout.deals import (
     TALABAT_ACTOR_ID,
     _dedupe,

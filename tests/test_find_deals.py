@@ -1,9 +1,8 @@
 """Task 8d — tests for the find_deals orchestrator (Talabat -> Tavily -> estimate)."""
 
-import os
-
 import pytest
 
+import config
 from agent1_scout import deals as deals_mod
 from agent1_scout.deals import find_deals
 from agent1_scout.state import Deal
@@ -61,7 +60,7 @@ def test_limit_applied(monkeypatch):
     assert len(out) == 12
 
 
-@pytest.mark.skipif(os.getenv("RUN_DEALS") != "1", reason="set RUN_DEALS=1 for live end-to-end deals")
+@pytest.mark.skipif(not config.RUN_DEALS, reason="set RUN_DEALS=1 for live end-to-end deals")
 def test_find_deals_live():
     out = find_deals("Primo's Pizza", "pizza")
     assert isinstance(out, list)

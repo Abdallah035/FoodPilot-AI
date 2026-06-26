@@ -1,24 +1,24 @@
 import json
-import os
-from dotenv import load_dotenv
+import sys
+from pathlib import Path
 
-load_dotenv()
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+import config
 
 from Rag import (
     build_rag_pipeline,
     calculate_order_calories,
 )
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY not set.")
+config.require_azure_openai()
 
 JSON_PATH   = "data.json"
 PERSIST_DIR = "./chroma_dishes_db"
 
 print("Building RAG pipeline...")
 vectorstore, llm, all_dishes = build_rag_pipeline(
-    JSON_PATH, GROQ_API_KEY, PERSIST_DIR
+    JSON_PATH, PERSIST_DIR
 )
 print(f"Pipeline ready — {len(all_dishes)} dishes indexed.\n")
 

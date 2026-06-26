@@ -1,10 +1,8 @@
 """Task 8c — tests for LLM price estimation of missing prices."""
 
-import os
-
 import pytest
 
-from agent1_scout import deals_estimate
+import config
 from agent1_scout.deals_estimate import (
     ESTIMATE_NOTE,
     _needs_price,
@@ -38,7 +36,7 @@ def test_missing_price_gets_flagged_estimate(monkeypatch):
         def invoke(self, prompt):
             return FakeMessage()
 
-    monkeypatch.setattr("langchain_groq.ChatGroq", FakeLLM)
+    monkeypatch.setattr(config, "get_azure_openai_llm", lambda temperature=0.0: FakeLLM())
 
     deals = [
         Deal(item_name="Shawarma Sandwich", price="", deal_description="beef"),
@@ -57,7 +55,7 @@ def test_missing_price_gets_flagged_estimate(monkeypatch):
     assert ESTIMATE_NOTE not in fries.deal_description
 
 
-@pytest.mark.skipif(os.getenv("RUN_GROQ_EST") != "1", reason="set RUN_GROQ_EST=1 for live estimate")
+@pytest.mark.skipif(not config.RUN_AZURE_EST, reason="set RUN_AZURE_EST=1 for live estimate")
 def test_estimate_live():
     out = estimate_missing_prices([Deal(item_name="Koshary medium", price="")], "Koshary El Tahrir")
     assert out[0].price.isdigit()

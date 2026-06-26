@@ -4,11 +4,9 @@ Offline test verifies the tracing config flag. A gated live test runs the
 (mocked-tools) graph under @traceable and confirms a run reaches LangSmith.
 """
 
-import os
-
 import pytest
 
-from agent1_scout import config
+import config
 
 
 def test_tracing_config_flag():
@@ -18,7 +16,7 @@ def test_tracing_config_flag():
 
 
 @pytest.mark.skipif(
-    os.getenv("RUN_TRACE") != "1" or not config.tracing_enabled(),
+    not config.RUN_TRACE or not config.tracing_enabled(),
     reason="set RUN_TRACE=1 with LangSmith configured",
 )
 def test_graph_run_is_traced(monkeypatch):

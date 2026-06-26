@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent1_scout.state import OrderPayload
+import config
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_RAG_JSON = PROJECT_ROOT / "RAG" / "data.json"
@@ -32,12 +33,10 @@ def _load_rag_dependencies(
 ) -> RagDependencies:
     from RAG.Rag import build_rag_pipeline
 
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise EnvironmentError("GROQ_API_KEY is required for RAG enrichment.")
+    config.require_azure_openai()
 
     path = Path(json_path or DEFAULT_RAG_JSON)
-    return build_rag_pipeline(str(path), api_key, str(persist_dir or DEFAULT_RAG_PERSIST_DIR))
+    return build_rag_pipeline(str(path), str(persist_dir or DEFAULT_RAG_PERSIST_DIR))
 
 
 @lru_cache(maxsize=1)

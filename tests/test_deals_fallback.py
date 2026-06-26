@@ -1,10 +1,8 @@
 """Task 8b — tests for the Tavily open-web fallback."""
 
-import os
-
 import pytest
 
-from agent1_scout import deals_fallback
+import config
 from agent1_scout.deals_fallback import (
     DealList,
     _extract_deals,
@@ -34,8 +32,7 @@ def test_extract_deals_uses_llm(monkeypatch):
         def with_structured_output(self, schema):
             return FakeStructured()
 
-    # patch ChatGroq imported lazily inside the function's module
-    monkeypatch.setattr("langchain_groq.ChatGroq", FakeLLM)
+    monkeypatch.setattr(config, "get_azure_openai_llm", lambda temperature=0.0: FakeLLM())
 
     results = [{"url": "http://e.com", "title": "Menu", "content": "Koshary 45 EGP"}]
     deals = _extract_deals(results, "Koshary El Tahrir", "koshary")
@@ -46,7 +43,7 @@ def test_extract_deals_uses_llm(monkeypatch):
     assert "45 EGP" in captured["prompt"]
 
 
-@pytest.mark.skipif(os.getenv("RUN_TAVILY") != "1", reason="set RUN_TAVILY=1 to hit Tavily+Groq")
+@pytest.mark.skipif(not config.RUN_TAVILY, reason="set RUN_TAVILY=1 to hit Tavily+Azure OpenAI")
 def test_tavily_menu_fallback_live():
     deals = tavily_menu_fallback("Koshary El Tahrir", "koshary")
     assert isinstance(deals, list)

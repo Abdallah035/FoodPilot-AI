@@ -1,19 +1,18 @@
 """Task 6 — tests for the find_restaurants node.
 
-These exercise the node with **Egyptian Arabic** queries. The real Groq intent
-parser runs (so the Arabic NLU path is genuinely tested); only the Apify network
+These exercise the node with **Egyptian Arabic** queries. The real Azure OpenAI
+intent parser runs (so the Arabic NLU path is genuinely tested); only the Apify network
 scraper is mocked with a realistic set of Maadi restaurants. A fully-live test is
 gated behind RUN_LIVE=1.
 """
 
-import os
-
 import pytest
 
-from agent1_scout import config, nodes
+import config
+from agent1_scout import nodes
 from agent1_scout.state import Coordinates, Restaurant
 
-requires_groq = pytest.mark.skipif(not config.has_groq(), reason="GROQ_API_KEY not set")
+requires_azure = pytest.mark.skipif(not config.has_azure_openai(), reason="Azure OpenAI is not configured")
 
 # user standing in Maadi
 USER = {"lat": 29.9600, "lon": 31.2600}
@@ -43,7 +42,7 @@ PIZZA_PLACES = [
 ]
 
 
-@requires_groq
+@requires_azure
 def test_arabic_kofta_pipeline(monkeypatch):
     """عايز كفتة كويسة -> kofta intent, near + well-reviewed place wins."""
     monkeypatch.setattr(nodes, "search_restaurants", lambda food, loc, n=5: KOFTA_PLACES)
@@ -69,7 +68,7 @@ def test_arabic_kofta_pipeline(monkeypatch):
     assert all("★" in r["reason"] for r in top)
 
 
-@requires_groq
+@requires_azure
 def test_arabic_cheap_pizza_budget(monkeypatch):
     """أرخص بيتزا -> budget '$' inferred, cheap near place favoured."""
     monkeypatch.setattr(nodes, "search_restaurants", lambda food, loc, n=5: PIZZA_PLACES)
@@ -87,9 +86,9 @@ def test_arabic_cheap_pizza_budget(monkeypatch):
     assert out["found_restaurants"][0]["name"] == "بيتزا كينج"
 
 
-@pytest.mark.skipif(os.getenv("RUN_LIVE") != "1", reason="set RUN_LIVE=1 for full live run")
+@pytest.mark.skipif(not config.RUN_LIVE, reason="set RUN_LIVE=1 for full live run")
 def test_arabic_kofta_fully_live():
-    """End-to-end with real Groq + real Apify on an Arabic craving."""
+    """End-to-end with real Azure OpenAI + real Apify on an Arabic craving."""
     state = {
         "user_query": "عايز كفتة",
         "user_coords": USER,
