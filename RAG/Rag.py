@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shutil
+from ddgs import DDGS
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -19,11 +20,6 @@ from langchain_groq import ChatGroq
 # 1. DOCUMENT LOADER
 # ─────────────────────────────────────────────
 def load_documents(json_path: str) -> tuple[list[Document], list[dict]]:
-    """
-    Returns:
-      - docs       : LangChain Documents for embedding
-      - all_dishes : Raw list kept in memory for aggregate/calorie queries
-    """
     with open(json_path, "r", encoding="utf-8") as f:
         dishes = json.load(f)
 
@@ -33,7 +29,7 @@ def load_documents(json_path: str) -> tuple[list[Document], list[dict]]:
         content = (
             f"اسم الطبق: {dish['name']}\n"
             f"الوصف: {dish['description']}\n"
-            f"السعرات الحرارية لكل 100 غرام: {dish['calories_per_100g']}\n"  # CHANGED
+            f"السعرات الحرارية لكل 100 غرام: {dish['calories_per_100g']}\n"
             f"المكونات: {ingredients}"
         )
         docs.append(Document(
@@ -41,7 +37,7 @@ def load_documents(json_path: str) -> tuple[list[Document], list[dict]]:
             metadata={
                 "id":       str(dish["id"]),
                 "name":     dish["name"],
-                "calories": dish["calories_per_100g"],                         # CHANGED
+                "calories": dish["calories_per_100g"],
             }
         ))
 
@@ -66,7 +62,7 @@ def build_vectorstore(
             persist_directory=persist_dir,
         )
 
-    print(" Building ChromaDB from scratch (one-time, ~60 sec)...")
+    print(" Building ChromaDB from scratch (one-time)...")
     vs = Chroma.from_documents(
         documents=docs,
         embedding=embeddings,
@@ -74,235 +70,81 @@ def build_vectorstore(
         persist_directory=persist_dir,
         collection_metadata={"hnsw:space": "cosine"},
     )
-    print(f" Indexed {len(docs)} dishes → saved to '{persist_dir}'")
+    print(f" Indexed {len(docs)} dishes - saved to '{persist_dir}'")
     return vs
 
 
 # ─────────────────────────────────────────────
-# 3. AGGREGATE QUERY DETECTION
-#    Handles "how many", "list all", etc.
-#    These CANNOT be answered by retrieval alone
-#    because retrieval only returns k=N docs.
+# 3. BUILD PIPELINE
 # ─────────────────────────────────────────────
-AGGREGATE_PATTERNS = [
-    r"كم\s*(عدد|وصفة|طبق|أكلة|وصفات|أطباق|أصناف)",
-    r"how many (recipes|dishes|items|foods)",
-    r"total (number|count|recipes|dishes)",
-    r"(اذكر|اسرد|أعطني)\s*(جميع|كل)",
-    r"(list|show|give me)\s*(all|every)",
-    r"ما\s*هي\s*(جميع|كل)\s*(الأطباق|الوصفات|الأكلات)",
-    r"all (dishes|recipes)",
-]
+def build_rag_pipeline(
+    json_path:    str,
+    groq_api_key: str,
+    persist_dir:  str = "./chroma_dishes_db",
+) -> tuple[Chroma, ChatGroq, list[dict]]:
+    docs, all_dishes = load_documents(json_path)
+    print(f" Loaded {len(docs)} dish documents from JSON.")
 
-def is_aggregate_query(question: str) -> bool:
-    return any(re.search(p, question, re.IGNORECASE) for p in AGGREGATE_PATTERNS)
-
-
-def handle_aggregate_query(
-    question:   str,
-    all_dishes: list[dict],
-    llm:        ChatGroq,
-) -> str:
-    """
-    For count/list questions, bypass retrieval entirely.
-    Pass the FULL dish index to the LLM as a numbered list.
-    """
-    total = len(all_dishes)
-    index = "\n".join(
-        f"{d['id']}. {d['name']} ({d['calories_per_100g']})"  # CHANGED
-        for d in all_dishes
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
     )
 
-    prompt = ChatPromptTemplate.from_template(
-        """أنت مساعد طهي. لديك قائمة كاملة بـ {total} وصفة طعام:
+    vectorstore = build_vectorstore(docs, embeddings, persist_dir)
 
-{index}
-
-السؤال: {question}
-
-أجب بدقة بناءً على القائمة الكاملة أعلاه. الإجابة:"""
+    llm = ChatGroq(
+        api_key=groq_api_key,
+        model_name="llama-3.3-70b-versatile",
+        temperature=0.2,
     )
 
-    chain = prompt | llm | StrOutputParser()
-    return chain.invoke({"total": total, "index": index, "question": question})
+    return vectorstore, llm, all_dishes
 
 
 # ─────────────────────────────────────────────
-# 4. CALORIE FILTER
-#    Semantic search cannot do math.
-#    We parse calorie ranges directly from
-#    all_dishes and filter numerically.
+# 4. DISH LOOKUP BY NAME
+#    Exact match first, semantic fallback second.
 # ─────────────────────────────────────────────
-CALORIE_PATTERNS = [
-    # Arabic
-    (r"أقل\s*من\s*(\d+)",               "less_than"),
-    (r"تحت\s*(\d+)",                     "less_than"),
-    (r"أكثر\s*من\s*(\d+)",              "greater_than"),
-    (r"فوق\s*(\d+)",                     "greater_than"),
-    (r"بين\s*(\d+)\s*و\s*(\d+)",        "between"),
-    # English
-    (r"less\s*than\s*(\d+)",            "less_than"),
-    (r"under\s*(\d+)",                  "less_than"),
-    (r"below\s*(\d+)",                  "less_than"),
-    (r"more\s*than\s*(\d+)",            "greater_than"),
-    (r"above\s*(\d+)",                  "greater_than"),
-    (r"over\s*(\d+)",                   "greater_than"),
-    (r"between\s*(\d+)\s*and\s*(\d+)", "between"),
-]
-
-def detect_calorie_query(question: str):
+def lookup_dish_by_name(dish_name: str, vectorstore: Chroma) -> dict | None:
     """
-    Returns (operator, val1, val2) or None.
-    operator is one of: 'less_than', 'greater_than', 'between'
+    Returns metadata dict {id, name, calories} or None if not found.
+    Step 1 — exact metadata filter (fast, no embedding needed).
+    Step 2 — semantic fallback for transliterations / spelling variants.
     """
-    for pattern, op in CALORIE_PATTERNS:
-        m = re.search(pattern, question, re.IGNORECASE)
-        if m:
-            if op == "between":
-                return op, int(m.group(1)), int(m.group(2))
-            else:
-                return op, int(m.group(1)), None
-    return None
-
-
-def parse_calorie_range(calorie_str: str) -> tuple[int, int]:
-    """
-    Parses strings like:
-      "120–150 سعرة لكل 100 غرام"
-    Returns (min_cal, max_cal).
-    """
-    numbers = re.findall(r"\d+", calorie_str)
-    if len(numbers) >= 2:
-        return int(numbers[0]), int(numbers[1])
-    elif len(numbers) == 1:
-        v = int(numbers[0])
-        return v, v
-    return 0, 0
-
-
-def filter_dishes_by_calories(
-    all_dishes: list[dict],
-    operator:   str,
-    val1:       int,
-    val2:       int | None,
-) -> list[dict]:
-    """
-    Filters dishes using the AVERAGE of their calorie range.
-    avg = (min + max) / 2
-    """
-    matched = []
-    for dish in all_dishes:
-        lo, hi = parse_calorie_range(dish["calories_per_100g"])  # CHANGED
-        avg = (lo + hi) / 2
-
-        if operator == "less_than"     and avg < val1:
-            matched.append(dish)
-        elif operator == "greater_than" and avg > val1:
-            matched.append(dish)
-        elif operator == "between"      and val2 and val1 <= avg <= val2:
-            matched.append(dish)
-
-    return matched
-
-
-def handle_calorie_query(
-    question:   str,
-    all_dishes: list[dict],
-    operator:   str,
-    val1:       int,
-    val2:       int | None,
-    llm:        ChatGroq,
-) -> str:
-    matched = filter_dishes_by_calories(all_dishes, operator, val1, val2)
-
-    if not matched:
-        return "لا توجد أطباق تطابق معيار السعرات الحرارية المطلوب في قاعدة البيانات."
-
-    dish_list = "\n".join(
-        f"  • {d['name']} — {d['calories_per_100g']}"  # CHANGED
-        for d in matched
-    )
-
-    prompt = ChatPromptTemplate.from_template(
-        """أنت مساعد طهي. وجدت {count} طبقاً يطابق معيار السعرات الحرارية:
-
-{dish_list}
-
-السؤال الأصلي: {question}
-
-قدّم الإجابة بشكل منظم وواضح. الإجابة:"""
-    )
-
-    chain = prompt | llm | StrOutputParser()
-    return chain.invoke({
-        "count":     len(matched),
-        "dish_list": dish_list,
-        "question":  question,
-    })
-
-
-# ─────────────────────────────────────────────
-# 5. DISH LOOKUP BY NAME  ← NEW
-#    Agent 2's primary entry point.
-#    Tries exact metadata match first (fast),
-#    falls back to semantic search for spelling
-#    variants and transliteration differences.
-# ─────────────────────────────────────────────
-def lookup_dish_by_name(
-    dish_name:   str,
-    vectorstore: Chroma,
-    retriever,
-) -> dict | None:
-    """
-    Returns a metadata dict with keys: id, name, calories
-    Returns None if the dish is not found in the RAG.
-
-    Step 1 — exact metadata filter: no embedding needed, O(1).
-    Step 2 — semantic fallback: catches spelling variants, transliteration,
-              partial names (e.g. "Om Ali" vs "أم علي").
-              Only accepts the top result if similarity score < 0.35
-              (cosine distance; lower = more similar).
-    """
-    # Step 1: exact name match via metadata filter
     try:
         result = vectorstore.get(where={"name": dish_name})
         if result and result["metadatas"]:
             meta = result["metadatas"][0]
-            print(f"   [RAG] Exact match → {meta['name']} | {meta['calories']}")
+            print(f"   [RAG] Exact match -> {meta['name']} | {meta['calories']}")
             return meta
     except Exception as e:
         print(f"   [RAG] Exact lookup error: {e}")
 
-    # Step 2: semantic fallback
     try:
         results = vectorstore.similarity_search_with_score(dish_name, k=1)
         if results:
             doc, score = results[0]
-            # cosine distance threshold: 0.35 ≈ 65% similarity minimum
-            if score < 0.35:
-                print(f"   [RAG] Semantic match → {doc.metadata['name']} "
+            # cosine distance < 0.60 catches transliterations (e.g. "Om Ali" -> أم علي)
+            if score < 0.60:
+                print(f"   [RAG] Semantic match -> {doc.metadata['name']} "
                       f"(score={score:.3f}) | {doc.metadata['calories']}")
                 return doc.metadata
             else:
-                print(f"   [RAG] Semantic score too low ({score:.3f}) — treating as MISS")
+                print(f"   [RAG] Semantic score too low ({score:.3f}) -- treating as MISS")
     except Exception as e:
         print(f"   [RAG] Semantic lookup error: {e}")
 
-    print(f"   [RAG] MISS — '{dish_name}' not found")
+    print(f"   [RAG] MISS -- '{dish_name}' not found")
     return None
 
 
 # ─────────────────────────────────────────────
-# 6. PERSISTENCE HELPERS  ← NEW
-#    Used by Agent 2 when a dish is not in RAG.
-#    Writes to JSON (source of truth) first,
-#    then upserts into ChromaDB.
+# 5. PERSISTENCE HELPERS
+#    Saves web-found dishes to JSON + ChromaDB
+#    so future lookups are instant.
 # ─────────────────────────────────────────────
 def dish_exists_in_json(dish_name: str, json_path: str) -> bool:
-    """
-    Guard against duplicate writes if two requests race
-    for the same unknown dish.
-    """
     with open(json_path, "r", encoding="utf-8") as f:
         all_dishes = json.load(f)
     return any(d["name"].strip() == dish_name.strip() for d in all_dishes)
@@ -314,47 +156,22 @@ def persist_new_dish(
     vectorstore: Chroma,
     all_dishes:  list[dict],
 ) -> dict:
-    """
-    Called by Agent 2 after a web search returns a new dish.
-
-    dish_data must follow the schema:
-        {
-            "name":             str,   # Arabic or English
-            "description":      str,
-            "calories_per_100g": str,  # e.g. "150–190 سعرة لكل 100 غرام"
-            "ingredients":      list[str]
-        }
-
-    Steps:
-      1. Duplicate guard — skip if dish already in JSON.
-      2. Assign new ID (max existing + 1).
-      3. Append to JSON file (source of truth).
-      4. Upsert one Document into ChromaDB (no full rebuild needed).
-      5. Append to in-memory all_dishes so calorie/aggregate
-         queries stay in sync for the rest of this session.
-
-    Returns the dish dict with its assigned ID.
-    """
-    # Step 1: duplicate guard
     if dish_exists_in_json(dish_data["name"], json_path):
-        print(f"   [Persist] '{dish_data['name']}' already in JSON — skipping write.")
+        print(f"   [Persist] '{dish_data['name']}' already in JSON -- skipping.")
         return dish_data
 
-    # Step 2: assign ID
     with open(json_path, "r", encoding="utf-8") as f:
         current = json.load(f)
 
     new_id = max(d["id"] for d in current) + 1
     dish_data["id"]     = new_id
-    dish_data["source"] = "web_search"   # provenance flag
+    dish_data["source"] = "web_search"
 
-    # Step 3: write to JSON
     current.append(dish_data)
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(current, f, ensure_ascii=False, indent=2)
-    print(f"   [Persist] JSON updated → [{new_id}] {dish_data['name']}")
+    print(f"   [Persist] JSON updated -> [{new_id}] {dish_data['name']}")
 
-    # Step 4: upsert into ChromaDB
     ingredients = "، ".join(dish_data.get("ingredients", []))
     content = (
         f"اسم الطبق: {dish_data['name']}\n"
@@ -362,7 +179,7 @@ def persist_new_dish(
         f"السعرات الحرارية لكل 100 غرام: {dish_data['calories_per_100g']}\n"
         f"المكونات: {ingredients}"
     )
-    doc = Document(
+    vectorstore.add_documents([Document(
         page_content=content,
         metadata={
             "id":       str(new_id),
@@ -370,229 +187,209 @@ def persist_new_dish(
             "calories": dish_data["calories_per_100g"],
             "source":   "web_search",
         }
-    )
-    vectorstore.add_documents([doc])
-    print(f"   [Persist] ChromaDB updated — "
-          f"total docs: {vectorstore._collection.count()}")
+    )])
+    print(f"   [Persist] ChromaDB updated -- total docs: {vectorstore._collection.count()}")
 
-    # Step 5: update in-memory list for this session
     all_dishes.append(dish_data)
-
     return dish_data
 
 
 # ─────────────────────────────────────────────
-# 7. HYBRID RETRIEVAL WITH KEYWORD FALLBACK
-#    If MMR semantic search returns < 2 results,
-#    fall back to keyword matching inside ChromaDB.
+# 6. WEB SEARCH CALORIE FALLBACK
+#    Called when a dish is not found in the RAG.
 # ─────────────────────────────────────────────
-def retrieve_with_fallback(
-    question:    str,
-    retriever,
+def web_search_calories(
+    dish_name:   str,
+    llm:         ChatGroq,
     vectorstore: Chroma,
-    k:           int = 6,
-) -> list[Document]:
-    docs = retriever.invoke(question)
+    all_dishes:  list[dict],
+    json_path:   str,
+) -> float | None:
+    queries = [
+        f"{dish_name} calories per 100g",
+        f"{dish_name} سعرات حرارية لكل 100 جرام",
+    ]
 
-    if len(docs) < 2:
-        print("   [Semantic retrieval weak → trying keyword fallback]")
-        keywords = [w for w in question.split() if len(w) > 2]
-        for kw in keywords:
-            try:
-                fallback = vectorstore.similarity_search(
-                    question,
-                    k=k,
-                    where_document={"$contains": kw},
-                )
-                if fallback:
-                    print(f"   [Keyword fallback matched on '{kw}']")
-                    return fallback
-            except Exception:
-                continue
+    raw_results = []
+    for query in queries:
+        print(f"   [WebSearch] Searching: '{query}'")
+        try:
+            with DDGS() as ddgs:
+                raw_results = list(ddgs.text(query, max_results=4))
+            if raw_results:
+                break
+        except Exception as e:
+            print(f"   [WebSearch] Search error: {e}")
+            continue
 
-    return docs
+    if not raw_results:
+        print(f"   [WebSearch] No results found for '{dish_name}'.")
+        return None
 
-
-def format_docs(docs: list[Document]) -> str:
-    return "\n\n---\n\n".join(
-        f"[الطبق رقم {d.metadata['id']}: {d.metadata['name']}]\n{d.page_content}"
-        for d in docs
+    snippets = "\n".join(
+        f"- {r.get('title','')}: {r.get('body','')}"
+        for r in raw_results
     )
 
+    extract_prompt = ChatPromptTemplate.from_template(
+        """أنت خبير تغذية. استخرج عدد السعرات الحرارية لكل 100 جرام من الطبق التالي.
 
-# ─────────────────────────────────────────────
-# 8. BUILD PIPELINE
-# ─────────────────────────────────────────────
-def build_rag_pipeline(
-    json_path:    str,
-    groq_api_key: str,
-    persist_dir:  str = "./chroma_dishes_db",
-):
-    docs, all_dishes = load_documents(json_path)
-    print(f" Loaded {len(docs)} dish documents from JSON.")
+الطبق: {dish}
 
-    # 512-token multilingual model — no truncation issues
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
+نتائج البحث:
+{snippets}
+
+مهم جداً: أجب برقم واحد فقط يمثل السعرات الحرارية لكل 100 جرام.
+إذا لم تجد معلومة دقيقة، قدّر بناءً على مكونات الطبق المعروفة.
+لا تكتب أي كلمات أو وحدات — رقم فقط.
+
+السعرات لكل 100 جرام:"""
     )
 
-    vectorstore = build_vectorstore(docs, embeddings, persist_dir)
+    raw = (extract_prompt | llm | StrOutputParser()).invoke(
+        {"dish": dish_name, "snippets": snippets}
+    ).strip()
 
-    # MMR search: considers 30 candidates, returns best 6 diverse results
-    retriever = vectorstore.as_retriever(
-        search_type="mmr",
-        search_kwargs={
-            "k":           6,
-            "fetch_k":     30,
-            "lambda_mult": 0.7,
+    m = re.search(r"\d+(?:\.\d+)?", raw)
+    if not m:
+        print(f"   [WebSearch] Could not extract calorie number.")
+        return None
+
+    cal_per_100g = float(m.group())
+    print(f"   [WebSearch] Found {cal_per_100g} cal/100g for '{dish_name}'")
+
+    persist_new_dish(
+        dish_data={
+            "name":              dish_name,
+            "description":       "طبق تم إضافته تلقائياً عبر البحث على الإنترنت.",
+            "calories_per_100g": f"{int(cal_per_100g)} سعرة لكل 100 غرام",
+            "ingredients":       [],
         },
+        json_path=json_path,
+        vectorstore=vectorstore,
+        all_dishes=all_dishes,
     )
 
-    llm = ChatGroq(
-        api_key=groq_api_key,
-        model_name="llama-3.3-70b-versatile",
-        temperature=0.2,
-    )
-
-    # total_count always injected so LLM knows real collection size
-    prompt = ChatPromptTemplate.from_template(
-        """أنت مساعد طهي متخصص في المطبخ المصري والعالمي.
-قاعدة البيانات تحتوي على {total_count} وصفة طعام إجمالاً.
-استخدم المعلومات المسترجعة أدناه للإجابة.
-إذا لم تجد الإجابة في السياق، قل ذلك بوضوح ولا تختلق معلومات.
-يمكنك الإجابة بنفس لغة السؤال (عربي أو إنجليزي).
-
-السياق المسترجع:
-{context}
-
-السؤال: {question}
-
-الإجابة:"""
-    )
-
-    return retriever, vectorstore, llm, prompt, all_dishes
+    return cal_per_100g
 
 
 # ─────────────────────────────────────────────
-# 9. SMART QUERY FUNCTION
+# 7. QUANTITY PARSER
+#    Converts Egyptian quantity expressions to grams.
 # ─────────────────────────────────────────────
-def query_rag(
-    question:    str,
-    retriever,
+def parse_quantity_to_grams(dish_name: str, quantity: str | float, llm: ChatGroq) -> float:
+    if isinstance(quantity, (int, float)):
+        return float(quantity)
+
+    prompt = ChatPromptTemplate.from_template("""أنت خبير في تقدير الكميات في السياق المصري.
+مهمتك: تحويل وصف الكمية إلى وزن بالجرام فقط.
+
+الطبق: {dish}
+الكمية المذكورة: {quantity}
+
+قواعد مهمة:
+- ربع كيلو = 250 جرام
+- نص كيلو / نصف كيلو = 500 جرام
+- تلت كيلو = 333 جرام
+- كيلو = 1000 جرام
+- رغيف / عيش = 80 جرام (خبز بلدي واحد)
+- طبق / صحن = الكمية المعتادة للطبق (قدر بناءً على الطبق المذكور)
+- علبة = 200 جرام تقريباً
+- وجبة = الحجم المعتاد للوجبة الواحدة
+- حبة = قطعة واحدة (قدر وزنها بناءً على الصنف)
+- كوباية = 240 جرام
+
+مهم جداً: أجب برقم واحد فقط يمثل الوزن بالجرام. لا تكتب أي كلمات أو وحدات.
+مثال: إذا كانت الكمية "ربع كيلو"، اكتب فقط: 250
+
+الوزن بالجرام:""")
+
+    result = (prompt | llm | StrOutputParser()).invoke(
+        {"dish": dish_name, "quantity": quantity}
+    ).strip()
+
+    m = re.search(r"\d+(?:\.\d+)?", result)
+    if m:
+        grams = float(m.group())
+        print(f"   [Quantity] '{quantity}' -> {grams}g")
+        return grams
+
+    print(f"   [Quantity] Could not parse '{quantity}', defaulting to 200g")
+    return 200.0
+
+
+# ─────────────────────────────────────────────
+# 8. CALORIE AGENT  ← main entry point
+#    Input:  [{"name": str, "quantity": str | float}, ...]
+#    Output: [{"name": str, "quantity_grams": float,
+#              "total_calories": float, "found": bool,
+#              "source": "rag" | "web" | None}, ...]
+# ─────────────────────────────────────────────
+def _parse_cal_per_100g(cal_str: str) -> float | None:
+    m = re.search(r"\d+", cal_str)
+    return float(m.group()) if m else None
+
+
+def calculate_order_calories(
+    order:       list[dict],
     vectorstore: Chroma,
     llm:         ChatGroq,
-    prompt:      ChatPromptTemplate,
-    all_dishes:  list[dict],
-) -> tuple[str, list[str]]:
+    all_dishes:  list[dict] | None = None,
+    json_path:   str = "data.json",
+) -> list[dict]:
+    results = []
+    for item in order:
+        dish_name = item.get("name", "")
+        quantity  = item.get("quantity", item.get("quantity_grams", 0))
 
-    # Route 1: aggregate queries — bypass retrieval, use full index
-    if is_aggregate_query(question):
-        print("   [→ Route 1: Aggregate query — using full dish index]")
-        answer = handle_aggregate_query(question, all_dishes, llm)
-        return answer, []
+        quantity_grams = parse_quantity_to_grams(dish_name, quantity, llm)
+        meta = lookup_dish_by_name(dish_name, vectorstore)
 
-    # Route 2: calorie filter — bypass retrieval, filter numerically
-    calorie_result = detect_calorie_query(question)
-    if calorie_result:
-        operator, val1, val2 = calorie_result
-        print(f"   [→ Route 2: Calorie query — operator: {operator}, "
-              f"val1: {val1}, val2: {val2}]")
-        answer = handle_calorie_query(question, all_dishes, operator, val1, val2, llm)
-        return answer, []
+        if meta is None:
+            cal_per_100g = web_search_calories(
+                dish_name, llm, vectorstore, all_dishes or [], json_path
+            )
+            if cal_per_100g is None:
+                results.append({
+                    "name":              dish_name,
+                    "quantity":          quantity,
+                    "quantity_grams":    quantity_grams,
+                    "calories_per_100g": None,
+                    "total_calories":    None,
+                    "found":             False,
+                    "source":            None,
+                })
+            else:
+                results.append({
+                    "name":              dish_name,
+                    "quantity":          quantity,
+                    "quantity_grams":    quantity_grams,
+                    "calories_per_100g": cal_per_100g,
+                    "total_calories":    round((cal_per_100g / 100) * quantity_grams, 1),
+                    "found":             True,
+                    "source":            "web",
+                })
+            continue
 
-    # Route 3: semantic search + keyword fallback
-    print("   [→ Route 3: Semantic search]")
-    docs = retrieve_with_fallback(question, retriever, vectorstore)
+        cal_per_100g = _parse_cal_per_100g(str(meta.get("calories", "")))
+        results.append({
+            "name":              dish_name,
+            "quantity":          quantity,
+            "quantity_grams":    quantity_grams,
+            "calories_per_100g": cal_per_100g,
+            "total_calories":    round((cal_per_100g / 100) * quantity_grams, 1) if cal_per_100g else None,
+            "found":             True,
+            "source":            "rag",
+        })
 
-    if not docs:
-        return "لم أجد أي وصفات مطابقة في قاعدة البيانات.", []
-
-    chain  = prompt | llm | StrOutputParser()
-    answer = chain.invoke({
-        "context":     format_docs(docs),
-        "question":    question,
-        "total_count": len(all_dishes),
-    })
-
-    sources = list({d.metadata["name"] for d in docs})
-    return answer, sources
+    return results
 
 
 # ─────────────────────────────────────────────
-# 10. UTILITIES
+# UTILITY: wipe ChromaDB to force a rebuild
+# Run once after changing data.json or the embedding model.
 # ─────────────────────────────────────────────
 def reset_vectorstore(persist_dir: str = "./chroma_dishes_db"):
-    """
-    Wipe the persisted ChromaDB and rebuild on next run.
-    Run this whenever you change the embedding model or JSON data.
-    """
     if os.path.exists(persist_dir):
         shutil.rmtree(persist_dir)
         print(f"  Deleted '{persist_dir}'. Will rebuild on next run.")
-
-
-def inspect_collection(vectorstore: Chroma):
-    col   = vectorstore._collection
-    count = col.count()
-    print(f"\n ChromaDB | collection: '{col.name}' | total documents: {count}")
-    for m in col.peek(limit=3)["metadatas"]:
-        print(f"   • [{m['id']}] {m['name']} — {m['calories']}")
-    print()
-
-
-# ─────────────────────────────────────────────
-# 11. ENTRY POINT
-# ─────────────────────────────────────────────
-if __name__ == "__main__":
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-    if not GROQ_API_KEY:
-        raise ValueError(" GROQ_API_KEY not found. Make sure it is set in your .env file.")
-
-    JSON_PATH   = "Egyptian_Dishes_Simplified.json"
-    PERSIST_DIR = "./chroma_dishes_db"
-
-    # ⚠️ Uncomment ONCE after updating the JSON (field name changed).
-    # Comment out again after the first successful run.
-    # reset_vectorstore(PERSIST_DIR)
-
-    print(" Initialising RAG pipeline...")
-    retriever, vectorstore, llm, prompt, all_dishes = build_rag_pipeline(
-        JSON_PATH, GROQ_API_KEY, PERSIST_DIR
-    )
-    inspect_collection(vectorstore)
-    print(f" Pipeline ready! ({len(all_dishes)} dishes indexed)\n")
-    print("اكتب سؤالك أو اكتب 'exit' للخروج\n")
-
-    sample_questions = [
-        "كم عدد الوصفات في قاعدة البيانات؟",            # Route 1 — aggregate
-        "اذكر لي جميع أطباق الحلويات",                   # Route 1 — aggregate
-        "أي الأطباق تحتوي على أقل من 100 سعرة لكل 100 غرام؟",  # Route 2 — calorie filter
-        "show me dishes between 100 and 150 calories",    # Route 2 — calorie filter
-        "ما هي مكونات الكشري؟",                           # Route 3 — semantic
-        "What are the ingredients of Om Ali?",             # Route 3 — semantic
-        "ما الفرق بين الطعمية والفلافل الشامية؟",         # Route 3 — semantic
-    ]
-
-    print("── أمثلة على أسئلة يمكنك تجربتها ──")
-    for i, q in enumerate(sample_questions, 1):
-        print(f"  {i}. {q}")
-    print()
-
-    while True:
-        question = input(" سؤالك: ").strip()
-
-        if question.lower() in ("exit", "quit", "خروج", ""):
-            print("مع السلامة! ")
-            break
-
-        answer, sources = query_rag(
-            question, retriever, vectorstore, llm, prompt, all_dishes
-        )
-
-        print(f"\n الإجابة:\n{answer}")
-        if sources:
-            print(f"\n المصادر: {' | '.join(sources)}")
-        print("─" * 60 + "\n")
