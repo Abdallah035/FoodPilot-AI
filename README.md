@@ -1,125 +1,252 @@
-# 🍔 Food Pilot
+# 🍔 Food Pilot — Agent 1: Discovery / Scout (Finder + Picker)
 
-**Food Pilot** is a multi-agent chatbot. You tell it what you're craving (e.g. *"a good burger"* or *"~300 cal with rice"*), and it finds and ranks nearby restaurants, helps you choose a deal, then prepares everything for ordering.
-
-Built to demonstrate a full agentic stack: **RAG · Web search · Multi-agent delegation (Deep Agents) · Human-in-the-loop · LangSmith tracing · Podman**.
+> The first agent of the Food Pilot pipeline. It turns a vague craving
+> (**Egyptian Arabic or English**) into a **selected restaurant** and a
+> **selected deal + quantity**, then outputs a strict **JSON payload** for the
+> next agent.
 
 ---
 
-## ✨ Overview
+## 1. What this agent does (big picture)
 
 ```mermaid
 flowchart LR
-    U["YOU<br/>'a good burger'"] --> O["ORCHESTRATOR<br/>(the manager)"]
-    O --> P["Pipeline:<br/>1. Find + pick restaurant<br/>2. Pick a deal<br/>3. Enrich + finalize"]
-    P --> N["TOOLS<br/>Apify · Tavily · RAG"]
-    O --> A["Answer back to YOU"]
-    A --> U
+    U["USER<br/>'عايز كفتة' / 'a good burger'"] --> A["SCOUT AGENT<br/>(LangGraph)"]
+    A --> P["JSON PAYLOAD<br/>restaurant + deal + quantity"]
+    P --> NEXT["next agent<br/>(Food / Order)"]
+
+    subgraph tools[" external tools "]
+      G["Groq LLM"]
+      AP["Apify Maps"]
+      TB["Talabat scraper"]
+      TV["Tavily search"]
+      LS["LangSmith tracing"]
+    end
+    A -.uses.-> tools
 ```
 
-A **Deep Agent orchestrator** parses the craving and delegates to three agents. The shared **RAG memory box** holds uploaded menus/FAQs/promos, **LangSmith** traces every step, and the whole app runs in a **Podman** container.
+The user makes **two choices** along the way (which restaurant, which deal) —
+these are the two **human-in-the-loop** checkpoints.
 
 ---
 
-## 🤖 The Agents
+## 2. The graph (what runs, in order)
 
-| Agent | Job | Key tools |
+```mermaid
+flowchart TD
+    START((START)) --> FR["find_restaurants<br/>intent → Apify → score → top 3"]
+    FR --> I1{{"INTERRUPT #1<br/>user picks a restaurant"}}
+    I1 --> FD["find_deals_node<br/>Talabat → Tavily → estimate"]
+    FD --> I2{{"INTERRUPT #2<br/>user picks a deal + quantity"}}
+    I2 --> CP["compile_payload<br/>build strict JSON"]
+    CP --> END((END))
+```
+
+| Node | File | Job |
 |---|---|---|
-| **Orchestrator** | Parse intent, delegate, answer FAQs from RAG | delegate · ask user · RAG FAQs |
-| **Agent 1 — Scout** | Find + rank restaurants, deal deep-dive (2 human checkpoints), output JSON payload | Apify Maps · Haversine · scoring · Tavily |
-| **Agent 2 — Food** | Add calories / ingredients / cuisine to the selected deal | Tavily / nutrition · RAG menus |
-| **Agent 3 — Order** | Finalize the selected deal (promo, summary) | RAG promos |
+| `find_restaurants` | `nodes.py` | parse craving → search Apify → score → **top 3** |
+| `ask_user_restaurant` | `nodes.py` | **INTERRUPT #1** — user picks 1 restaurant |
+| `find_deals_node` | `nodes.py` | get that restaurant's live menu deals |
+| `ask_user_deal` | `nodes.py` | **INTERRUPT #2** — user picks a deal + quantity |
+| `compile_payload` | `nodes.py` / `compile.py` | build the JSON output |
+
+The interrupts use LangGraph's `interrupt()` + a checkpointer: the graph
+**freezes**, the CLI shows options, and `.invoke(Command(resume=...))` continues.
+
+---
+
+## 3. How each task fits together (modules we built)
 
 ```mermaid
 flowchart TD
-    U["YOU (chat)"] --> O
-    O["ORCHESTRATOR<br/>(Deep Agent manager)"]
-    O --> SC["AGENT 1 — SCOUT<br/>find + rank + deal deep-dive<br/>(2 human checkpoints)<br/>outputs JSON payload"]
-    O --> FD["AGENT 2 — FOOD<br/>calories + ingredients"]
-    O --> OR["AGENT 3 — ORDER<br/>finalize the deal"]
-    O -.reads.-> R[("RAG MEMORY BOX<br/>menus · FAQs · promos")]
-    SC --> SC1["Apify Google Maps"]
-    SC --> SC2["Haversine distance"]
-    SC --> SC3["scoring math"]
-    SC --> SC4["Tavily deal search"]
-    FD -.reads menus.-> R
-    OR -.reads promos.-> R
-    LS["LangSmith tracing"] -.watches.-> O
+    subgraph in[" 1. UNDERSTAND "]
+      Q["user_query"] --> INT["intent.py<br/>Groq · Arabic+English<br/>→ food_entity + budget"]
+    end
+
+    subgraph find[" 2. FIND + RANK "]
+      DISC["discovery.py<br/>Apify Google Maps"] --> SC["scoring.py<br/>proximity / credibility / price"]
+      DIST["distance.py<br/>Haversine km"] --> SC
+      SC --> TOP["top 3 restaurants"]
+    end
+
+    subgraph deals[" 3. DEAL PRICES (accurate) "]
+      T1["deals.py<br/>Talabat by slug (Tavily→slug)"] --> T2["deals_fallback.py<br/>Tavily open web"]
+      T2 --> T3["deals_estimate.py<br/>LLM estimate (flagged)"]
+    end
+
+    subgraph out[" 4. OUTPUT "]
+      COMP["compile.py<br/>OrderPayload (strict)"]
+    end
+
+    INT --> DISC
+    TOP --> T1
+    T3 --> COMP
+    ST["state.py — shared models:<br/>ScoutState · Restaurant · Deal · OrderPayload"]
 ```
 
 ---
 
-## 🔄 Flow (with Human-in-the-Loop)
+## 4. Scoring — how restaurants are ranked
 
-The pipeline **pauses for the user twice** inside Scout — it never auto-picks.
-
-```mermaid
-flowchart TD
-    A["1. YOU type a craving"] --> B["2. Orchestrator parses intent + location"]
-    B --> C["3. Scout: Apify search + score → top 5"]
-    C --> D{{"4. Pick a restaurant (HITL #1)"}}
-    D --> E["5. Scout: Tavily menu/deal deep-dive"]
-    E --> F{{"6. Pick a deal (HITL #2)"}}
-    F --> G["7. Scout outputs JSON payload"]
-    G --> H["8. Food enriches → Order finalizes"]
-```
-
----
-
-## 🧮 Scout Scoring Formula
-
-Restaurants are ranked by a weighted score before the top 5 are shown:
+Computed in Python before showing the user the top 3.
 
 | Criteria | Weight | Logic |
 |---|---|---|
-| **Proximity** | 40% | inversely proportional to distance (1 km ≫ 10 km) |
-| **Quality** | 30% | Google Maps star rating (out of 5) |
-| **Reliability** | 15% | log scale of review count |
-| **Price Match** | 15% | alignment with user budget |
+| **Proximity** | 40% | Haversine distance — nearer scores higher |
+| **Credibility** | 50% | `(rating/5) × min(1, log10(reviews+1)/4)` — high **only** when rating AND review count are both high |
+| **Price match** | 10% | restaurant price tier vs the user's budget |
+
+> Why "credibility" and not raw rating? A 4.9★ place with 3 reviews should **not**
+> beat a 4.6★ place with 2,000 reviews. The log term rewards proven places.
 
 ---
 
-## 🧠 RAG Memory Box
+## 5. Accurate Egyptian menu prices (the important part)
 
-Upload documents; they are embedded and stored so agents can search them.
+```mermaid
+flowchart TD
+    R["selected restaurant name"] --> T["Tavily: find exact<br/>talabat.com/egypt/&lt;slug&gt;"]
+    T -->|slug found| S["Apify Talabat scraper<br/>scrape THAT exact menu"]
+    T -->|no Talabat page| W["Tavily open-web<br/>(Elmenus / blogs)"]
+    S --> CLEAN["drop 0-EGP junk + dedupe"]
+    W --> EX["Groq extracts deals"]
+    CLEAN --> EST["fill missing prices<br/>LLM estimate (flagged)"]
+    EX --> EST
+    EST --> D["clean Deal list<br/>(name · price · EGP)"]
+```
 
-| Holds | Content | Read by |
-|---|---|---|
-| Menus | food + price + ingredients | Food |
-| FAQs | delivery area, allergy, refund | Orchestrator |
-| Promos | discount codes | Order |
+Why the slug step? Talabat's name-search returns a **generic list** and can match
+the **wrong restaurant** (e.g. "Primo's Pizza" → a sushi bar). Finding the exact
+Talabat URL first and scraping **by slug** pins the right place.
 
 ---
 
-## 🛠️ Tech Stack
+## 6. Output payload (handed to the next agent)
+
+```json
+{
+  "order_status": "configured",
+  "user_intent": "burger",
+  "selected_restaurant": {
+    "name": "...", "address": "...", "phone": "...",
+    "coordinates": {"lat": 0, "lon": 0},
+    "google_maps_rating": 4.6
+  },
+  "selected_deal": {
+    "item_name": "...", "price": "250", "currency": "EGP",
+    "deal_description": "...", "source_url": "...",
+    "quantity": 2, "portion": ""
+  }
+}
+```
+
+`quantity` = how many the user ordered. `portion` = size/weight, used later by the
+nutrition agent.
+
+---
+
+## 7. Tech stack
 
 | Layer | Choice |
 |---|---|
-| LLM | Claude (Opus / Sonnet) |
-| Agents | LangGraph **Deep Agents** (delegation + interrupts) |
-| RAG | uploaded docs → embeddings → vector store |
-| Web search | **Apify** (restaurants) + **Tavily** (deals / nutrition) |
-| Tracing | **LangSmith** |
-| Container | **Podman** |
-| Frontend | Backend / CLI for now (web UI later) |
+| Orchestration | **LangGraph** (nodes + `interrupt()` for human-in-the-loop) |
+| LLM | **Groq** (`langchain-groq`) — intent parsing, deal extraction, price estimate |
+| Restaurants | **Apify** Google Maps Extractor |
+| Menu prices | **Apify** Talabat scraper (by slug) + **Tavily** web search |
+| Tracing | **LangSmith** (project `FoodPilot-AI`) |
+| Packaging | **uv** (`pyproject.toml` + `uv.lock`) |
 
 ---
 
-## ✅ Course Requirements
+## 8. Project layout
 
-| Requirement | How Food Pilot does it |
+```
+agent1_scout/
+  config.py          env + settings (Groq, Apify, Tavily, LangSmith)
+  state.py           ScoutState, Restaurant, Deal, OrderPayload
+  intent.py          parse craving (Arabic/English) -> food + budget
+  distance.py        Haversine km
+  discovery.py       Apify Google Maps -> Restaurant[]
+  scoring.py         rank_top3 (proximity / credibility / price)
+  deals.py           Talabat-by-slug + find_deals orchestrator
+  deals_fallback.py  Tavily open-web fallback
+  deals_estimate.py  LLM price estimate (flagged)
+  compile.py         build the JSON payload
+  nodes.py           the 5 graph nodes + 2 interrupts
+  graph.py           assembles + compiles the LangGraph
+main.py              CLI runner (drives both interrupts)
+scripts/             manual inspection scripts (live API)
+tests/               pytest suite (mocked + opt-in live)
+```
+
+---
+
+## 9. Run it
+
+```bash
+# 1. install deps (uv creates the venv)
+uv sync
+
+# 2. set your keys
+cp .env.example .env
+#   fill: GROQ_API_KEY, APIFY_API_TOKEN, TAVILY_API_KEY, LANGSMITH_API_KEY
+
+# 3. run the CLI agent
+uv run python main.py
+uv run python main.py --query "I'm craving a good burger" --location "Maadi, Cairo" --lat 29.96 --lon 31.26
+```
+
+The CLI prints the **top 3 restaurants** (pick a number), then the **deals**
+(pick a number + quantity), then the **final JSON payload**.
+
+---
+
+## 10. How to test (team guide)
+
+```mermaid
+flowchart LR
+    A["uv run pytest"] --> B["fast suite<br/>(APIs mocked)<br/>58 tests, ~5s"]
+    A2["RUN_*=1 uv run pytest ..."] --> C["live suite<br/>(real APIs, opt-in)"]
+```
+
+### Fast suite (default — no network, safe for everyone)
+```bash
+uv run pytest          # all external calls are mocked
+```
+Every task has its own test file:
+
+| Test file | Covers |
 |---|---|
-| RAG from uploaded docs | Memory box of menus / FAQs / promos |
-| Web search tool | Scout (Apify + Tavily), Food (nutrition) |
-| Multi-agent delegation (Deep Agents) | Orchestrator → Scout / Food / Order |
-| Human-in-the-loop | Scout's two interrupts: pick restaurant → pick deal |
-| LangSmith tracing | Every agent + tool call traced |
-| Containerized with Podman | Whole app ships in one container |
+| `test_state.py` | data models + payload shape |
+| `test_intent.py` | Arabic + English intent (real Groq, auto-skips w/o key) |
+| `test_distance.py` | Haversine correctness |
+| `test_discovery.py` | Apify result mapping |
+| `test_scoring.py` | ranking formula (near+reviewed beats far+new) |
+| `test_nodes.py` | find_restaurants node (Arabic) |
+| `test_interrupt_restaurant.py` | INTERRUPT #1 pause/resume |
+| `test_deals_talabat.py` | slug extraction + junk-price filter |
+| `test_deals_fallback.py` | Tavily fallback extraction |
+| `test_deals_estimate.py` | flagged price estimate |
+| `test_find_deals.py` | Talabat→Tavily→estimate orchestration |
+| `test_interrupt_deal.py` | INTERRUPT #2 pick deal + quantity |
+| `test_compile.py` | JSON payload matches spec |
+| `test_graph.py` | **full graph end-to-end** (mocked) |
+| `test_tracing.py` | LangSmith config |
 
----
+### Live suite (opt-in — hits real APIs, costs credits)
+```bash
+RUN_APIFY=1   uv run pytest tests/test_discovery.py        # real Apify Maps
+RUN_TALABAT=1 uv run pytest tests/test_deals_talabat.py    # real Tavily+Talabat
+RUN_TAVILY=1  uv run pytest tests/test_deals_fallback.py   # real Tavily+Groq
+RUN_DEALS=1   uv run pytest tests/test_find_deals.py       # full deal pipeline
+RUN_LIVE=1    uv run pytest tests/test_nodes.py            # real Groq+Apify
+RUN_TRACE=1   uv run pytest tests/test_tracing.py          # verify LangSmith trace
+```
 
-## 📄 Docs
+### Manual inspection (run a real query, save results to JSON)
+```bash
+uv run python -m scripts.inspect_discovery "burger" "Maadi, Cairo" 5
+uv run python -m scripts.inspect_deals "Primo's Pizza" "pizza" eg
+```
 
-- [`Architecture.md`](Architecture.md) — full overall architecture and diagrams.
-
-> Agent 1 (Discovery / Scout) is under active development.
+> **Current status:** `58 passed, 7 skipped` (skips = the opt-in live tests above).
