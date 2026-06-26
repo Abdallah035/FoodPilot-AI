@@ -131,6 +131,8 @@ def generate_receipt_node(state: FinalizerState) -> dict:
     
     promo = state.get("verified_promo")
     final_price = state.get("final_price", 0.0)
+    rag_enrichment = state.get("rag_enrichment") or {}
+    nutrition_context = rag_enrichment.get("answer") or "Not available"
     
     prompt = ChatPromptTemplate.from_template("""
 You are a helpful customer service assistant for Food Pilot.
@@ -143,6 +145,8 @@ Item Ordered: {item_name}
 Original Price: {original_price}
 
 Applied Promo: {promo_details}
+
+Nutrition Context from RAG: {nutrition_context}
 
 Final Price: {final_price} EGP
 
@@ -159,6 +163,7 @@ Format this nicely using Markdown. If there is a promo, explicitly tell the user
         "item_name": item_name,
         "original_price": original_price,
         "promo_details": promo_details,
+        "nutrition_context": nutrition_context,
         "final_price": f"{final_price:.2f}"
     })
     

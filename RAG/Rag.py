@@ -15,6 +15,10 @@ from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
 
 
+def _dish_calories(dish: dict) -> str:
+    return dish.get("calories_per_100g") or dish.get("calories_per_dish") or ""
+
+
 # ─────────────────────────────────────────────
 # 1. DOCUMENT LOADER
 # ─────────────────────────────────────────────
@@ -33,7 +37,7 @@ def load_documents(json_path: str) -> tuple[list[Document], list[dict]]:
         content = (
             f"اسم الطبق: {dish['name']}\n"
             f"الوصف: {dish['description']}\n"
-            f"السعرات الحرارية لكل 100 غرام: {dish['calories_per_100g']}\n"  # CHANGED
+            f"السعرات الحرارية لكل 100 غرام: {_dish_calories(dish)}\n"  # CHANGED
             f"المكونات: {ingredients}"
         )
         docs.append(Document(
@@ -41,7 +45,7 @@ def load_documents(json_path: str) -> tuple[list[Document], list[dict]]:
             metadata={
                 "id":       str(dish["id"]),
                 "name":     dish["name"],
-                "calories": dish["calories_per_100g"],                         # CHANGED
+                "calories": _dish_calories(dish),                         # CHANGED
             }
         ))
 
@@ -109,7 +113,7 @@ def handle_aggregate_query(
     """
     total = len(all_dishes)
     index = "\n".join(
-        f"{d['id']}. {d['name']} ({d['calories_per_100g']})"  # CHANGED
+        f"{d['id']}. {d['name']} ({_dish_calories(d)})"  # CHANGED
         for d in all_dishes
     )
 
@@ -192,7 +196,7 @@ def filter_dishes_by_calories(
     """
     matched = []
     for dish in all_dishes:
-        lo, hi = parse_calorie_range(dish["calories_per_100g"])  # CHANGED
+        lo, hi = parse_calorie_range(_dish_calories(dish))  # CHANGED
         avg = (lo + hi) / 2
 
         if operator == "less_than"     and avg < val1:
@@ -219,7 +223,7 @@ def handle_calorie_query(
         return "لا توجد أطباق تطابق معيار السعرات الحرارية المطلوب في قاعدة البيانات."
 
     dish_list = "\n".join(
-        f"  • {d['name']} — {d['calories_per_100g']}"  # CHANGED
+        f"  • {d['name']} — {_dish_calories(d)}"  # CHANGED
         for d in matched
     )
 
@@ -551,7 +555,7 @@ if __name__ == "__main__":
     if not GROQ_API_KEY:
         raise ValueError(" GROQ_API_KEY not found. Make sure it is set in your .env file.")
 
-    JSON_PATH   = "Egyptian_Dishes_Simplified.json"
+    JSON_PATH   = os.path.join(os.path.dirname(__file__), "data.json")
     PERSIST_DIR = "./chroma_dishes_db"
 
     # ⚠️ Uncomment ONCE after updating the JSON (field name changed).

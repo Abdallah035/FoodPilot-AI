@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import TypedDict, Optional, List
+from typing import Any, TypedDict, Optional, List
 from agent1_scout.state import OrderPayload
 
 class VerifiedPromo(TypedDict):
@@ -15,3 +15,4 @@ class FinalizerState(TypedDict, total=False):
     verified_promo: Optional[VerifiedPromo]
     final_price: float
     receipt_summary: str
+    rag_enrichment: dict[str, Any]
