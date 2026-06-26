@@ -88,8 +88,8 @@ def run(query: str, location: str, lat: float, lon: float) -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Food Pilot — Scout agent CLI")
-    p.add_argument("--query", default="انا عايز آكل مكرونة")
-    p.add_argument("--location", default="الورديان , alexandria")
+    p.add_argument("--query", default="انا عايز آكل كشري")
+    p.add_argument("--location", default="el tahrir , cairo")
     p.add_argument("--lat", type=float, default=29.9600)
     p.add_argument("--lon", type=float, default=31.2600)
     args = p.parse_args()
