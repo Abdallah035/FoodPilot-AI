@@ -33,7 +33,7 @@ def load_documents(json_path: str) -> tuple[list[Document], list[dict]]:
         content = (
             f"اسم الطبق: {dish['name']}\n"
             f"الوصف: {dish['description']}\n"
-            f"السعرات الحرارية: {dish['calories_per_dish']}\n"
+            f"السعرات الحرارية لكل 100 غرام: {dish['calories_per_100g']}\n"  # CHANGED
             f"المكونات: {ingredients}"
         )
         docs.append(Document(
@@ -41,7 +41,7 @@ def load_documents(json_path: str) -> tuple[list[Document], list[dict]]:
             metadata={
                 "id":       str(dish["id"]),
                 "name":     dish["name"],
-                "calories": dish["calories_per_dish"],
+                "calories": dish["calories_per_100g"],                         # CHANGED
             }
         ))
 
@@ -109,7 +109,7 @@ def handle_aggregate_query(
     """
     total = len(all_dishes)
     index = "\n".join(
-        f"{d['id']}. {d['name']} ({d['calories_per_dish']})"
+        f"{d['id']}. {d['name']} ({d['calories_per_100g']})"  # CHANGED
         for d in all_dishes
     )
 
@@ -168,8 +168,7 @@ def detect_calorie_query(question: str):
 def parse_calorie_range(calorie_str: str) -> tuple[int, int]:
     """
     Parses strings like:
-      "100–200 سعرة حرارية"
-      "1800–2400 سعرة حرارية"
+      "120–150 سعرة لكل 100 غرام"
     Returns (min_cal, max_cal).
     """
     numbers = re.findall(r"\d+", calorie_str)
@@ -193,7 +192,7 @@ def filter_dishes_by_calories(
     """
     matched = []
     for dish in all_dishes:
-        lo, hi = parse_calorie_range(dish["calories_per_dish"])
+        lo, hi = parse_calorie_range(dish["calories_per_100g"])  # CHANGED
         avg = (lo + hi) / 2
 
         if operator == "less_than"     and avg < val1:
@@ -220,7 +219,7 @@ def handle_calorie_query(
         return "لا توجد أطباق تطابق معيار السعرات الحرارية المطلوب في قاعدة البيانات."
 
     dish_list = "\n".join(
-        f"  • {d['name']} — {d['calories_per_dish']}"
+        f"  • {d['name']} — {d['calories_per_100g']}"  # CHANGED
         for d in matched
     )
 
@@ -243,7 +242,147 @@ def handle_calorie_query(
 
 
 # ─────────────────────────────────────────────
-# 5. HYBRID RETRIEVAL WITH KEYWORD FALLBACK
+# 5. DISH LOOKUP BY NAME  ← NEW
+#    Agent 2's primary entry point.
+#    Tries exact metadata match first (fast),
+#    falls back to semantic search for spelling
+#    variants and transliteration differences.
+# ─────────────────────────────────────────────
+def lookup_dish_by_name(
+    dish_name:   str,
+    vectorstore: Chroma,
+    retriever,
+) -> dict | None:
+    """
+    Returns a metadata dict with keys: id, name, calories
+    Returns None if the dish is not found in the RAG.
+
+    Step 1 — exact metadata filter: no embedding needed, O(1).
+    Step 2 — semantic fallback: catches spelling variants, transliteration,
+              partial names (e.g. "Om Ali" vs "أم علي").
+              Only accepts the top result if similarity score < 0.35
+              (cosine distance; lower = more similar).
+    """
+    # Step 1: exact name match via metadata filter
+    try:
+        result = vectorstore.get(where={"name": dish_name})
+        if result and result["metadatas"]:
+            meta = result["metadatas"][0]
+            print(f"   [RAG] Exact match → {meta['name']} | {meta['calories']}")
+            return meta
+    except Exception as e:
+        print(f"   [RAG] Exact lookup error: {e}")
+
+    # Step 2: semantic fallback
+    try:
+        results = vectorstore.similarity_search_with_score(dish_name, k=1)
+        if results:
+            doc, score = results[0]
+            # cosine distance threshold: 0.35 ≈ 65% similarity minimum
+            if score < 0.35:
+                print(f"   [RAG] Semantic match → {doc.metadata['name']} "
+                      f"(score={score:.3f}) | {doc.metadata['calories']}")
+                return doc.metadata
+            else:
+                print(f"   [RAG] Semantic score too low ({score:.3f}) — treating as MISS")
+    except Exception as e:
+        print(f"   [RAG] Semantic lookup error: {e}")
+
+    print(f"   [RAG] MISS — '{dish_name}' not found")
+    return None
+
+
+# ─────────────────────────────────────────────
+# 6. PERSISTENCE HELPERS  ← NEW
+#    Used by Agent 2 when a dish is not in RAG.
+#    Writes to JSON (source of truth) first,
+#    then upserts into ChromaDB.
+# ─────────────────────────────────────────────
+def dish_exists_in_json(dish_name: str, json_path: str) -> bool:
+    """
+    Guard against duplicate writes if two requests race
+    for the same unknown dish.
+    """
+    with open(json_path, "r", encoding="utf-8") as f:
+        all_dishes = json.load(f)
+    return any(d["name"].strip() == dish_name.strip() for d in all_dishes)
+
+
+def persist_new_dish(
+    dish_data:   dict,
+    json_path:   str,
+    vectorstore: Chroma,
+    all_dishes:  list[dict],
+) -> dict:
+    """
+    Called by Agent 2 after a web search returns a new dish.
+
+    dish_data must follow the schema:
+        {
+            "name":             str,   # Arabic or English
+            "description":      str,
+            "calories_per_100g": str,  # e.g. "150–190 سعرة لكل 100 غرام"
+            "ingredients":      list[str]
+        }
+
+    Steps:
+      1. Duplicate guard — skip if dish already in JSON.
+      2. Assign new ID (max existing + 1).
+      3. Append to JSON file (source of truth).
+      4. Upsert one Document into ChromaDB (no full rebuild needed).
+      5. Append to in-memory all_dishes so calorie/aggregate
+         queries stay in sync for the rest of this session.
+
+    Returns the dish dict with its assigned ID.
+    """
+    # Step 1: duplicate guard
+    if dish_exists_in_json(dish_data["name"], json_path):
+        print(f"   [Persist] '{dish_data['name']}' already in JSON — skipping write.")
+        return dish_data
+
+    # Step 2: assign ID
+    with open(json_path, "r", encoding="utf-8") as f:
+        current = json.load(f)
+
+    new_id = max(d["id"] for d in current) + 1
+    dish_data["id"]     = new_id
+    dish_data["source"] = "web_search"   # provenance flag
+
+    # Step 3: write to JSON
+    current.append(dish_data)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(current, f, ensure_ascii=False, indent=2)
+    print(f"   [Persist] JSON updated → [{new_id}] {dish_data['name']}")
+
+    # Step 4: upsert into ChromaDB
+    ingredients = "، ".join(dish_data.get("ingredients", []))
+    content = (
+        f"اسم الطبق: {dish_data['name']}\n"
+        f"الوصف: {dish_data.get('description', '')}\n"
+        f"السعرات الحرارية لكل 100 غرام: {dish_data['calories_per_100g']}\n"
+        f"المكونات: {ingredients}"
+    )
+    doc = Document(
+        page_content=content,
+        metadata={
+            "id":       str(new_id),
+            "name":     dish_data["name"],
+            "calories": dish_data["calories_per_100g"],
+            "source":   "web_search",
+        }
+    )
+    vectorstore.add_documents([doc])
+    print(f"   [Persist] ChromaDB updated — "
+          f"total docs: {vectorstore._collection.count()}")
+
+    # Step 5: update in-memory list for this session
+    all_dishes.append(dish_data)
+
+    return dish_data
+
+
+# ─────────────────────────────────────────────
+# 7. HYBRID RETRIEVAL WITH KEYWORD FALLBACK
 #    If MMR semantic search returns < 2 results,
 #    fall back to keyword matching inside ChromaDB.
 # ─────────────────────────────────────────────
@@ -256,7 +395,7 @@ def retrieve_with_fallback(
     docs = retriever.invoke(question)
 
     if len(docs) < 2:
-        print("   [ Semantic retrieval weak → trying keyword fallback]")
+        print("   [Semantic retrieval weak → trying keyword fallback]")
         keywords = [w for w in question.split() if len(w) > 2]
         for kw in keywords:
             try:
@@ -266,7 +405,7 @@ def retrieve_with_fallback(
                     where_document={"$contains": kw},
                 )
                 if fallback:
-                    print(f"   [ Keyword fallback matched on '{kw}']")
+                    print(f"   [Keyword fallback matched on '{kw}']")
                     return fallback
             except Exception:
                 continue
@@ -282,7 +421,7 @@ def format_docs(docs: list[Document]) -> str:
 
 
 # ─────────────────────────────────────────────
-# 6. BUILD PIPELINE
+# 8. BUILD PIPELINE
 # ─────────────────────────────────────────────
 def build_rag_pipeline(
     json_path:    str,
@@ -295,7 +434,7 @@ def build_rag_pipeline(
     # 512-token multilingual model — no truncation issues
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-        model_kwargs={"device": "cpu"},         # change to "cuda" if GPU available
+        model_kwargs={"device": "cpu"},
         encode_kwargs={"normalize_embeddings": True},
     )
 
@@ -337,7 +476,7 @@ def build_rag_pipeline(
 
 
 # ─────────────────────────────────────────────
-# 7. SMART QUERY FUNCTION
+# 9. SMART QUERY FUNCTION
 # ─────────────────────────────────────────────
 def query_rag(
     question:    str,
@@ -358,7 +497,8 @@ def query_rag(
     calorie_result = detect_calorie_query(question)
     if calorie_result:
         operator, val1, val2 = calorie_result
-        print(f"   [→ Route 2: Calorie query — operator: {operator}, val1: {val1}, val2: {val2}]")
+        print(f"   [→ Route 2: Calorie query — operator: {operator}, "
+              f"val1: {val1}, val2: {val2}]")
         answer = handle_calorie_query(question, all_dishes, operator, val1, val2, llm)
         return answer, []
 
@@ -381,7 +521,7 @@ def query_rag(
 
 
 # ─────────────────────────────────────────────
-# 8. UTILITIES
+# 10. UTILITIES
 # ─────────────────────────────────────────────
 def reset_vectorstore(persist_dir: str = "./chroma_dishes_db"):
     """
@@ -403,7 +543,7 @@ def inspect_collection(vectorstore: Chroma):
 
 
 # ─────────────────────────────────────────────
-# 9. ENTRY POINT
+# 11. ENTRY POINT
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -411,11 +551,11 @@ if __name__ == "__main__":
     if not GROQ_API_KEY:
         raise ValueError(" GROQ_API_KEY not found. Make sure it is set in your .env file.")
 
-    JSON_PATH   = "data.json"
+    JSON_PATH   = "Egyptian_Dishes_Simplified.json"
     PERSIST_DIR = "./chroma_dishes_db"
 
-    # ⚠️ Uncomment ONCE if you get a dimension mismatch error,
-    # then comment it out again after the first successful run.
+    # ⚠️ Uncomment ONCE after updating the JSON (field name changed).
+    # Comment out again after the first successful run.
     # reset_vectorstore(PERSIST_DIR)
 
     print(" Initialising RAG pipeline...")
@@ -427,13 +567,13 @@ if __name__ == "__main__":
     print("اكتب سؤالك أو اكتب 'exit' للخروج\n")
 
     sample_questions = [
-        "كم عدد الوصفات في قاعدة البيانات؟",           # Route 1 — aggregate
-        "اذكر لي جميع أطباق الحلويات",                  # Route 1 — aggregate
-        "أي الأطباق تحتوي على أقل من 500 سعرة حرارية؟", # Route 2 — calorie filter
-        "show me dishes between 500 and 900 calories",   # Route 2 — calorie filter
-        "ما هي مكونات الكشري؟",                          # Route 3 — semantic
-        "What are the ingredients of Om Ali?",            # Route 3 — semantic
-        "ما الفرق بين الطعمية والفلافل الشامية؟",        # Route 3 — semantic
+        "كم عدد الوصفات في قاعدة البيانات؟",            # Route 1 — aggregate
+        "اذكر لي جميع أطباق الحلويات",                   # Route 1 — aggregate
+        "أي الأطباق تحتوي على أقل من 100 سعرة لكل 100 غرام؟",  # Route 2 — calorie filter
+        "show me dishes between 100 and 150 calories",    # Route 2 — calorie filter
+        "ما هي مكونات الكشري؟",                           # Route 3 — semantic
+        "What are the ingredients of Om Ali?",             # Route 3 — semantic
+        "ما الفرق بين الطعمية والفلافل الشامية؟",         # Route 3 — semantic
     ]
 
     print("── أمثلة على أسئلة يمكنك تجربتها ──")
