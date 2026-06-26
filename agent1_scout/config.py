@@ -24,5 +24,13 @@ LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT", "food-pilot")
 MAX_DISTANCE_KM = float(os.getenv("MAX_DISTANCE_KM", "10"))
 
 
+LANGSMITH_TRACING = os.getenv("LANGSMITH_TRACING", "").lower() == "true"
+
+
 def has_groq() -> bool:
     return bool(GROQ_API_KEY)
+
+
+def tracing_enabled() -> bool:
+    """True when LangSmith tracing is switched on and a key is present."""
+    return LANGSMITH_TRACING and bool(LANGSMITH_API_KEY)
