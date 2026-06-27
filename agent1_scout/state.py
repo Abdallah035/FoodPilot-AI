@@ -78,7 +78,8 @@ class ScoutState(TypedDict, total=False):
     budget: Optional[str]  # "$" / "$$" / "$$$" or None
 
     # produced by intent parsing
-    food_entity: str
+    food_entity: str  # the exact dish (used for deal matching), e.g. "كفتة"
+    search_category: str  # the cuisine/category searched on the map, e.g. "مشويات"
 
     # produced by find_restaurants
     found_restaurants: list  # list[Restaurant] (as dicts in state)

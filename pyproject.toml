@@ -17,6 +17,8 @@ dependencies = [
     "langchain-chroma>=0.2.0",
     "langchain-openai>=0.3.0",
     "ddgs>=9.14.4",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
 ]
 
 [dependency-groups]

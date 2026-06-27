@@ -1,0 +1,24 @@
+# Food Pilot — full stack (web UI + FastAPI bridge over the LangGraph agents).
+# Works with `podman compose up` or `docker compose up`.
+services:
+  bridge:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    environment:
+      # Inside the compose network, reach the bridge by service name.
+      NEXT_PUBLIC_API_BASE: "http://bridge:8000"
+      NEXT_PUBLIC_USE_MOCK: "false"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - bridge

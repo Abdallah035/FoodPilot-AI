@@ -1,0 +1,152 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 36 100% 99%;
+    --foreground: 24 30% 12%;
+    --card: 0 0% 100%;
+    --surface: 30 40% 98%;
+    --muted: 30 20% 95%;
+    --muted-foreground: 24 12% 45%;
+    --border: 30 18% 90%;
+    --ring: 28 100% 50%;
+  }
+
+  .dark {
+    --background: 24 18% 7%;
+    --foreground: 30 30% 96%;
+    --card: 24 14% 11%;
+    --surface: 24 14% 13%;
+    --muted: 24 10% 18%;
+    --muted-foreground: 30 12% 62%;
+    --border: 24 10% 22%;
+    --ring: 28 100% 55%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    background-image: var(--app-bg);
+    background-attachment: fixed;
+  }
+
+  :root {
+    --app-bg: radial-gradient(at 0% 0%, hsl(28 100% 95% / 0.7) 0px, transparent 45%),
+      radial-gradient(at 100% 0%, hsl(45 100% 92% / 0.6) 0px, transparent 40%),
+      radial-gradient(at 100% 100%, hsl(140 60% 94% / 0.5) 0px, transparent 40%);
+  }
+  .dark {
+    --app-bg: radial-gradient(at 0% 0%, hsl(28 100% 20% / 0.25) 0px, transparent 45%),
+      radial-gradient(at 100% 0%, hsl(45 100% 25% / 0.18) 0px, transparent 40%),
+      radial-gradient(at 80% 100%, hsl(140 60% 25% / 0.12) 0px, transparent 40%);
+  }
+
+  ::selection {
+    @apply bg-brand-500/25;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-foreground/10;
+    border: 3px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-foreground/20;
+    background-clip: padding-box;
+  }
+
+  /* Respect reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  /* Glassmorphism surface */
+  .glass {
+    @apply bg-card/70 backdrop-blur-xl border border-white/40 shadow-soft;
+  }
+  .dark .glass {
+    @apply bg-card/60 border-white/[0.06];
+  }
+
+  .glass-strong {
+    @apply bg-card/85 backdrop-blur-2xl border border-white/50 shadow-soft-lg;
+  }
+  .dark .glass-strong {
+    @apply bg-card/75 border-white/[0.08];
+  }
+
+  .glass-subtle {
+    @apply bg-surface/50 backdrop-blur-md border border-border/60;
+  }
+
+  /* Gradient text */
+  .text-gradient {
+    @apply bg-brand-gradient bg-clip-text text-transparent;
+  }
+
+  /* Focus ring used across interactive elements */
+  .focus-ring {
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-ring/70 focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
+
+  /* Shimmer skeleton */
+  .skeleton {
+    @apply relative overflow-hidden rounded-lg bg-muted;
+  }
+  .skeleton::after {
+    @apply absolute inset-0 -translate-x-full;
+    content: "";
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(var(--foreground) / 0.06),
+      transparent
+    );
+    animation: shimmer 1.6s infinite;
+  }
+
+  /* Thin hairline divider */
+  .hairline {
+    @apply border-t border-border/70;
+  }
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .animate-gradient-text {
+    background-size: 200% auto;
+    @apply animate-gradient-pan;
+  }
+}

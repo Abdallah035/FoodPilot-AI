@@ -379,6 +379,148 @@ def calculate_order_calories(
 
 
 # ─────────────────────────────────────────────
+# MODE B — FOOD INQUIRY (RAG question answering)
+#    Input:  a free-text question about a dish
+#    Output: a natural Egyptian-Arabic answer
+# ─────────────────────────────────────────────
+def _dish_context_from_json(query: str, all_dishes: list[dict] | None) -> tuple[str, dict | None]:
+    """Find the dish in data.json by direct name overlap (no embeddings needed).
+
+    This is the reliable path: it matches the dish name inside the question
+    (e.g. 'كام سعرة في الكشري؟' -> الكشري) and returns its FULL record
+    (calories + ingredients + description) as context. Returns (context, dish).
+    """
+    if not all_dishes:
+        return "", None
+
+    def _norm(text: str) -> str:
+        # Drop the definite article 'ال' (as a prefix on words) and collapse spaces,
+        # so 'الفول' ~ 'فول' and 'الكشري' ~ 'كشري'.
+        text = re.sub(r"\bال", "", text or "")
+        return re.sub(r"\s+", " ", text).strip()
+
+    q_norm = _norm(query)
+    q_words = set(q_norm.split())
+    best = None
+    best_score = 0
+    for dish in all_dishes:
+        name = str(dish.get("name", "")).strip()
+        if not name:
+            continue
+        name_norm = _norm(name)
+        if not name_norm:
+            continue
+        # Strongest: whole dish name appears in the question (normalized or raw).
+        if name in query or name_norm in q_norm:
+            score = len(name_norm) + 100  # big boost for a full-name hit
+        else:
+            # Otherwise: overlap of the dish's words with the question's words
+            # (catches 'الفول' -> 'فول مدمس' via the shared word 'فول').
+            name_words = set(name_norm.split())
+            overlap = len(name_words & q_words)
+            score = overlap
+        if score > best_score:
+            best, best_score = dish, score
+
+    # require at least one solid word/name hit
+    if best is None or best_score < 1:
+        return "", None
+
+    ingredients = "، ".join(best.get("ingredients", []))
+    context = (
+        f"اسم الطبق: {best.get('name','')}\n"
+        f"الوصف: {best.get('description','')}\n"
+        f"السعرات الحرارية لكل 100 غرام: {best.get('calories_per_100g','')}\n"
+        f"المكونات: {ingredients}"
+    )
+    return context, best
+
+
+def query_rag(
+    query:       str,
+    vectorstore: Chroma,
+    llm:         object,
+    all_dishes:  list[dict] | None = None,
+    json_path:   str = "data.json",
+    k:           int = 3,
+) -> str:
+    """Answer a food question (calories / ingredients / description) from the
+    RAG dish data, in Egyptian Arabic.
+
+    Strategy: exact dish match from data.json FIRST (reliable, no embeddings),
+    then semantic search, then a web calorie lookup.
+    """
+    # 1. exact dish match from JSON (handles 'الكشري' -> 'كشري') — most reliable
+    context, _dish = _dish_context_from_json(query, all_dishes)
+
+    # 2. fall back to semantic search only if no direct match
+    if not context.strip():
+        try:
+            docs = vectorstore.similarity_search(query, k=k)
+            context = "\n\n".join(d.page_content for d in docs)
+        except Exception as exc:  # noqa: BLE001
+            print(f"   [RAG] query_rag search error: {exc}")
+            context = ""
+
+    # 3. still nothing — try a web calorie lookup so we still help
+    if not context.strip():
+        try:
+            cal = web_search_calories(query, llm, vectorstore, all_dishes or [], json_path)
+        except Exception:  # noqa: BLE001
+            cal = None
+        if cal is None:
+            return f"معلش، معنديش معلومات كافية عن «{query}». تحب تسألني عن طبق تاني؟"
+        return f"«{query}»: حوالي {int(cal)} سعرة حرارية لكل ١٠٠ جرام (من بحث الويب)."
+
+    # 4. answer in Egyptian Arabic, grounded ONLY in the context
+    prompt = ChatPromptTemplate.from_template(
+        "أنت مساعد أكل ودود اسمه فود بايلوت. جاوب على سؤال المستخدم بالعامية المصرية، "
+        "باختصار وبشكل مفيد، بالاعتماد على المعلومات التالية. المعلومات دي موثوقة، "
+        "فاستخدم الأرقام والمكونات اللي فيها مباشرةً ولا تقول إنك مش متأكد طالما المعلومة موجودة.\n\n"
+        "المعلومات المتاحة:\n{context}\n\n"
+        "السؤال: {question}\n\n"
+        "الإجابة بالعربي المصري:"
+    )
+    chain = prompt | llm | StrOutputParser()
+    try:
+        return chain.invoke({"context": context, "question": query}).strip()
+    except Exception as exc:  # noqa: BLE001
+        print(f"   [RAG] query_rag LLM error: {exc}")
+        # graceful fallback: return the raw context so the user still gets the data
+        return context
+
+
+# ─────────────────────────────────────────────
+# MODE C — CALORIE FILTER
+#    Input:  a kcal/100g upper limit
+#    Output: list of dish names at/under that limit
+# ─────────────────────────────────────────────
+def find_dishes_by_calorie_constraint(
+    limit:      float,
+    all_dishes: list[dict] | None,
+    json_path:  str = "data.json",
+) -> list[str]:
+    """Return dish names whose calories_per_100g is <= `limit`, cheapest-calorie
+    first. Reads from the in-memory dish list (or the JSON file as a fallback)."""
+    dishes = all_dishes
+    if not dishes:
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                dishes = json.load(f)
+        except Exception:  # noqa: BLE001
+            dishes = []
+
+    scored: list[tuple[float, str]] = []
+    for dish in dishes:
+        cal = _parse_cal_per_100g(str(dish.get("calories_per_100g", "")))
+        if cal is not None and cal <= limit:
+            scored.append((cal, dish.get("name", "")))
+
+    scored.sort(key=lambda x: x[0])
+    return [name for _, name in scored if name]
+
+
+# ─────────────────────────────────────────────
 # UTILITY: wipe ChromaDB to force a rebuild
 # Run once after changing data.json or the embedding model.
 # ─────────────────────────────────────────────

@@ -18,25 +18,33 @@ from .state import ScoutState
 def find_restaurants(state: ScoutState) -> dict:
     """Node: intent parse -> Apify discovery -> score -> top 3.
 
+    Searches the map by the dish's CUISINE/CATEGORY (e.g. كفتة -> مشويات) so we
+    find grill houses like الدهان that SERVE the dish, instead of restaurants
+    literally named after the dish. The exact dish (`food_entity`) is kept for
+    matching the menu item/deal later.
+
     Reads:  user_query, user_coords, location_query, (optional) budget
-    Writes: food_entity, budget, found_restaurants (top 3, as dicts)
+    Writes: food_entity, search_category, budget, found_restaurants (top 3)
     """
     user_query = state["user_query"]
     user_coords = state["user_coords"]
     location_query = state["location_query"]
 
-    # 1. parse intent (food entity + budget) — Arabic or English
+    # 1. parse intent (dish + searchable cuisine category + budget) — Arabic or English
     intent = parse_intent(user_query)
     budget = state.get("budget") or intent.budget
+    # Fall back to the dish itself if the model didn't supply a category.
+    search_term = (intent.search_category or "").strip() or intent.food_entity
 
-    # 2. broad discovery via Apify
-    restaurants = search_restaurants(intent.food_entity, location_query, n=5)
+    # 2. broad discovery via Apify, searching the CATEGORY (not the dish name)
+    restaurants = search_restaurants(search_term, location_query, n=5)
 
     # 3. score + rank, keep top 3
     top = rank_top3(restaurants, user_coords, budget=budget)
 
     return {
         "food_entity": intent.food_entity,
+        "search_category": search_term,
         "budget": budget,
         "found_restaurants": [r.model_dump() for r in top],
     }

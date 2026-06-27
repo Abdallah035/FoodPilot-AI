@@ -122,22 +122,23 @@ def generate_receipt_node(state: FinalizerState) -> dict:
     nutrition_context = rag_enrichment.get("answer") or "Not available"
     
     prompt = ChatPromptTemplate.from_template("""
-You are a helpful customer service assistant for Food Pilot.
-Generate a friendly markdown receipt for the user.
+أنت مساعد خدمة عملاء ودود لتطبيق "فود بايلوت".
+اكتب إيصال طلب ودّي بصيغة Markdown باللهجة المصرية العامية.
 
-Restaurant: {restaurant_name}
-Phone: {restaurant_phone}
+المطعم: {restaurant_name}
+رقم الهاتف: {restaurant_phone}
 
-Item Ordered: {item_name}
-Original Price: {original_price}
+الوجبة المطلوبة: {item_name}
+السعر الأصلي: {original_price}
 
-Applied Promo: {promo_details}
+الخصم المطبّق: {promo_details}
 
-Nutrition Context from RAG: {nutrition_context}
+السعرات من قاعدة المعرفة: {nutrition_context}
 
-Final Price: {final_price} EGP
+السعر النهائي: {final_price} جنيه
 
-Format this nicely using Markdown. If there is a promo, explicitly tell the user which platform to use it on.
+نسّق الإيصال بشكل جميل باستخدام Markdown. لو فيه كود خصم، قول للمستخدم صراحةً على أي منصّة يستخدمه.
+اكتب كل النص بالعربي المصري.
 """)
     
     promo_details = "None"
